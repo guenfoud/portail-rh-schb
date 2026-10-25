@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Base de données SQLite et secrets d'authentification générés au démarrage
+# (ne jamais commiter de données de production ou de secrets JWT)
+db/*.sqlite
+db/*.sqlite3
+db/.jwt_secret
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Android build artifacts & local properties
+.gradle/
+**/android-app/.gradle/
+**/android-app/.kotlin/
+**/android-app/build/
+**/android-app/*/build/
+**/android-app/local.properties
+*.apk
+*.aab
+
+# Archives & Temporary files
+*.zip
+*.tar.gz
+

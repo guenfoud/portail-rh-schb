@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SCHB Gica - Portail RH & Pointage</title>
+  
+  <!-- SheetJS for Excel Parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- Chart.js for analytics -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Google Fonts & Stylesheets -->
+  <link rel="stylesheet" href="/src/style.css">
+
+  <!-- PWA -->
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#7c3aed">
+
+  <script>
+    try {
+      localStorage.removeItem('gica_theme');
+      document.documentElement.removeAttribute('data-theme');
+    } catch (e) {}
+  </script>
+</head>
+<body>
+  
+  <!-- 1. LOGIN CONTAINER -->
+  <div id="login-container">
+    <div class="login-card card" style="position: relative; padding-top: 48px;">
+      <!-- Selector Language -->
+      <div class="lang-selector" style="position: absolute; top: 16px; right: 16px; display: flex; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; background: var(--bg-secondary); height: 30px; z-index: 10;">
+        <button type="button" class="btn-lang active btn-lang-fr" data-lang="fr" style="background: var(--color-primary); color: white; border: none; padding: 0 10px; font-weight: 700; cursor: pointer; font-size: 0.75rem; transition: all 0.2s;">FR</button>
+        <button type="button" class="btn-lang btn-lang-ar" data-lang="ar" style="background: transparent; color: var(--text-secondary); border: none; padding: 0 10px; font-weight: 700; cursor: pointer; font-size: 0.75rem; transition: all 0.2s;">عربي</button>
+      </div>
+      <img src="/src/logogica.webp" alt="GICA Logo" class="login-logo" style="height: 70px; margin: 0 auto 16px auto; display: block; object-fit: contain;">
+      <h2 style="text-align: center; font-weight: 900; font-size: 1.6rem; background: var(--gradient-brand); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;">SCHB Gica</h2>
+      <p style="text-align: center; color: var(--text-secondary); margin-bottom: 24px; font-size: 0.9rem;">Portail Gestion RH & Pointage</p>
+      
+      <form id="login-form">
+        <div class="form-group">
+          <label for="login-matricule">Matricule Employé</label>
+          <input type="text" id="login-matricule" class="form-control" placeholder="ex: 1002" required>
+        </div>
+        <div class="form-group" style="margin-bottom: 24px;">
+          <label for="login-password">Mot de passe</label>
+          <input type="password" id="login-password" class="form-control" placeholder="••••••••" required>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; height: 46px; font-size: 1rem; border-radius: var(--radius-md);">
+          Se connecter
+        </button>
+      </form>
+      <div id="login-error" style="color: var(--color-danger); text-align: center; margin-top: 12px; font-weight: 600; font-size: 0.85rem; display: none;"></div>
+    </div>
+  </div>
+
+  <!-- 2. MAIN APPLICATION CONTAINER -->
+  <div id="app" style="display: none;">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="logo-container">
+        <img src="/src/logogica.webp" alt="GICA Logo" class="sidebar-logo">
+        <div class="logo-text">
+          <span class="logo-title">SCHB Gica</span>
+          <span class="logo-subtitle">Portail RH</span>
+        </div>
+      </div>
+      
+      <nav class="nav-menu">
+        <a href="#dashboard" class="nav-item active" data-view="dashboard" data-role="employee,supervisor,hr">
+          <i data-lucide="layout-dashboard"></i>
+          <span>Tableau de Bord</span>
+        </a>
+        <a href="#employees" class="nav-item" data-view="employees" data-role="hr,supervisor">
+          <i data-lucide="users"></i>
+          <span>Employés</span>
+        </a>
+        <a href="#pointage" class="nav-item" data-view="pointage" data-role="hr,supervisor">
+          <i data-lucide="clock"></i>
+          <span>Pointage & Logs</span>
+        </a>
+        <a href="#recuperation" class="nav-item" data-view="recuperation" data-role="employee,supervisor,hr">
+          <i data-lucide="calendar-days"></i>
+          <span>Récupérations</span>
+        </a>
+        <a href="#recupedetail" class="nav-item" data-view="recupedetail" data-role="supervisor,hr">
+          <i data-lucide="file-text"></i>
+          <span>Détails Mensuels</span>
+        </a>
+        <a href="#absences" class="nav-item" data-view="absences" data-role="employee,supervisor,hr">
+          <i data-lucide="plane-takeoff"></i>
+          <span>Absences & Congés</span>
+        </a>
+        <a href="#organigramme" class="nav-item" data-view="organigramme" data-role="employee,supervisor,hr">
+          <i data-lucide="git-branch"></i>
+          <span>Organigramme & Intérim</span>
+        </a>
+        <a href="#calendar" class="nav-item" data-view="calendar" data-role="supervisor,hr">
+          <i data-lucide="calendar"></i>
+          <span>Calendrier Équipe</span>
+        </a>
+        <a href="#terminal" class="nav-item" data-view="terminal" data-role="employee,supervisor,hr">
+          <i data-lucide="fingerprint"></i>
+          <span>Borne Pointeuse</span>
+        </a>
+        <a href="#settings" class="nav-item" data-view="settings" data-role="hr">
+          <i data-lucide="settings"></i>
+          <span>Configuration</span>
+        </a>
+        
+        <!-- Logout item -->
+        <a href="#" class="nav-item" id="btn-logout" data-role="employee,supervisor,hr">
+          <i data-lucide="log-out"></i>
+          <span>Déconnexion</span>
+        </a>
+      </nav>
+      
+      <div class="sidebar-footer">
+        <span>© 2026 SCHB Gica</span>
+        <span>Version 2.1.0 (MySQL-GICA)</span>
+      </div>
+    </aside>
+
+    <!-- Overlay sombre pour fermer la sidebar mobile en cliquant à côté -->
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <!-- Bouton hamburger flottant (visible uniquement sur mobile) -->
+    <button class="mobile-sidebar-toggle" id="mobile-sidebar-toggle" aria-label="Menu navigation">
+      <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Filigrane du logo, centré derrière le contenu -->
+      <img src="/src/logogica.webp" alt="" class="main-watermark" aria-hidden="true">
+
+      <!-- Top Header -->
+      <header class="top-header">
+        <div class="header-title-container">
+          <h1 id="view-title">Tableau de Bord</h1>
+          <p id="view-subtitle">Aperçu général et statistiques d'aujourd'hui</p>
+        </div>
+        
+        <div class="top-header-right">
+          <!-- Notifications (demandes en attente) -->
+          <div class="notif-bell-wrapper">
+            <button type="button" class="btn-icon notif-bell-btn" id="notif-bell-btn" title="Notifications" aria-label="Notifications">
+              <i data-lucide="bell"></i>
+              <span class="notif-badge" id="notif-badge" hidden>0</span>
+            </button>
+            <div class="notif-dropdown" id="notif-dropdown" hidden>
+              <div class="notif-dropdown-header">Demandes en attente</div>
+              <div class="notif-dropdown-list" id="notif-dropdown-list"></div>
+            </div>
+          </div>
+
+          <!-- Mode sombre désactivé (Thème toujours clair) -->
+          <button type="button" class="btn-icon" id="dark-mode-toggle" style="display: none;" aria-hidden="true">
+            <i data-lucide="sun" id="dark-mode-icon"></i>
+          </button>
+
+          <!-- Selector Language -->
+          <div class="lang-selector">
+            <button type="button" class="btn-lang btn-lang-fr" data-lang="fr">FR</button>
+            <button type="button" class="btn-lang btn-lang-ar" data-lang="ar">عربي</button>
+          </div>
+
+          <div class="user-profile">
+            <div class="user-avatar" id="header-user-avatar">RH</div>
+            <div class="user-info">
+              <span class="user-name" id="header-user-name">Administrateur SCHB</span>
+              <span class="user-role" id="header-user-role">Superviseur RH</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <!-- View Container (SPA Injector) -->
+      <div id="main-view-container">
+        <!-- Rendered component will go here -->
+      </div>
+    </main>
+
+    <!-- Barre de Navigation Basse Mobile (Bottom Nav) -->
+    <nav class="bottom-nav" id="bottom-nav" aria-label="Navigation mobile">
+      <a href="#dashboard" class="bottom-nav-item active" data-view="dashboard" data-role="employee,supervisor,hr">
+        <i data-lucide="layout-dashboard"></i>
+        <span>Accueil</span>
+      </a>
+      <a href="#absences" class="bottom-nav-item" data-view="absences" data-role="employee,supervisor,hr">
+        <i data-lucide="plane-takeoff"></i>
+        <span>Congés</span>
+      </a>
+      <a href="#pointage" class="bottom-nav-item" data-view="pointage" data-role="supervisor,hr">
+        <i data-lucide="clock"></i>
+        <span>Pointages</span>
+      </a>
+      <a href="#terminal" class="bottom-nav-item" data-view="terminal" data-role="employee">
+        <i data-lucide="fingerprint"></i>
+        <span>Pointer</span>
+      </a>
+      <a href="#recuperation" class="bottom-nav-item" data-view="recuperation" data-role="employee,supervisor,hr">
+        <i data-lucide="calendar-days"></i>
+        <span>Récups</span>
+      </a>
+      <a href="#organigramme" class="bottom-nav-item" data-view="organigramme" data-role="employee,supervisor,hr">
+        <i data-lucide="users"></i>
+        <span>Équipe</span>
+      </a>
+    </nav>
+  </div>
+
+  <!-- Global Modal System -->
+  <div class="modal-overlay" id="global-modal-overlay">
+    <div class="modal-container">
+      <div class="modal-header">
+        <h2 id="modal-title">Formulaire</h2>
+        <button class="btn-icon" id="modal-close-btn">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body" id="modal-body-content">
+        <!-- Form injected here -->
+      </div>
+      <div class="modal-footer" id="modal-footer-actions">
+        <!-- Footer action buttons injected here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Conteneur des notifications toast animées -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Overlay de chargement (logo animé) affiché pendant les changements de page -->
+  <div id="route-loading-overlay" class="route-loading-overlay">
+    <img src="/src/logogica.webp" alt="Chargement..." class="route-loading-logo">
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

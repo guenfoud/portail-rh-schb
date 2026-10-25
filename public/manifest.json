@@ -1,0 +1,20 @@
+{
+  "name": "SCHB Gica - Portail RH & Pointage",
+  "short_name": "SCHB Gica",
+  "description": "Portail de gestion RH et de pointage du personnel — SCHB Gica",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d0a1a",
+  "theme_color": "#7c3aed",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

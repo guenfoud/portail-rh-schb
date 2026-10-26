@@ -1160,6 +1160,23 @@ app.post('/api/recuperations', authenticate, (req, res) => {
               if (err) console.error(err);
             });
           }
+          broadcast({ type: 'update', path: '/api/recuperations' });
+
+          if (finalStatut === 'En attente') {
+            db.get("SELECT matricule, nom, prenom, departement, SuperieurMatricule FROM employees WHERE matricule = ?", [matricule], (errE, empInfo) => {
+              if (!errE && empInfo) {
+                const targetSup = empInfo.SuperieurMatricule || '1002';
+                createNotification({
+                  matricule_destinataire: targetSup,
+                  titre: `Nouvelle demande de récupération — ${empInfo.prenom} ${empInfo.nom}`,
+                  message: `L'employé ${empInfo.prenom} ${empInfo.nom} a déposé une demande de récupération de ${(duree/8).toFixed(1)} jour(s) (${duree}h) pour le motif : ${motif || 'Non précisé'}.`,
+                  type: 'recuperation',
+                  lien: '#recuperation?tab=attente',
+                  email_sent: 0
+                });
+              }
+            });
+          }
           res.json({ success: true, id: newId });
         }
       );
@@ -1192,6 +1209,17 @@ app.post('/api/recuperations', authenticate, (req, res) => {
             }
 
             logAudit(req, `Décision RH récupération : ${statut}`, oldRequest.matricule, `${oldRequest.duree}h — ${oldRequest.motif}`);
+            broadcast({ type: 'update', path: '/api/recuperations' });
+
+            createNotification({
+              matricule_destinataire: oldRequest.matricule,
+              titre: statut === 'Approuvé' ? 'Demande de récupération approuvée' : 'Demande de récupération refusée',
+              message: `Votre demande de récupération de ${(oldRequest.duree/8).toFixed(1)} jour(s) (${oldRequest.duree}h) a été ${statut.toLowerCase()}e par ${decide_par || 'la Direction RH'}.`,
+              type: 'recuperation',
+              lien: '#recuperation?tab=historique',
+              email_sent: 0
+            });
+
             res.json({ success: true });
           }
         );
@@ -1217,6 +1245,17 @@ app.post('/api/recuperations/:id/supervisor-decision', authenticate, requireRole
       function(err) {
         if (err) return res.status(500).json({ error: err.message });
         logAudit(req, `Pré-validation superviseur récupération : ${statut}`, reqRow.matricule, `${reqRow.duree}h — ${reqRow.motif}`);
+        broadcast({ type: 'update', path: '/api/recuperations' });
+
+        createNotification({
+          matricule_destinataire: reqRow.matricule,
+          titre: statut === 'Approuvé' ? 'Avis favorable sur votre récupération' : 'Avis défavorable sur votre récupération',
+          message: `Votre responsable a émis un avis ${statut === 'Approuvé' ? 'FAVORABLE' : 'DÉFAVORABLE'} sur votre demande de récupération de ${(reqRow.duree/8).toFixed(1)}j.`,
+          type: 'recuperation',
+          lien: '#recuperation?tab=attente',
+          email_sent: 0
+        });
+
         res.json({ success: true });
       }
     );
@@ -1398,7 +1437,7 @@ app.post('/api/absences', authenticate, (req, res) => {
                       empMatricule: emp.matricule,
                       empDepartement: emp.departement,
                       empPoste: emp.poste,
-                      typeConge,
+                      typeConge: type_conge,
                       dateDebut: date_debut,
                       dateFin: date_fin,
                       dureeJours: duree_jours,
@@ -1417,7 +1456,7 @@ app.post('/api/absences', authenticate, (req, res) => {
                         titre: `[Intérim de ${supNom}] Demande de congé — ${emp.prenom} ${emp.nom}`,
                         message: `L'employé ${emp.prenom} ${emp.nom} (${emp.poste || emp.departement}) a soumis une demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin}. En tant qu'intérimaire désigné de ${supNom} (actuellement en congé/absent), votre validation préalable est requise pour transmission à la DRH.`,
                         type: 'conge',
-                        lien: '#absences',
+                        lien: '#absences?tab=attente',
                         email_destinataire: targetEmail,
                         email_sent: 1,
                         email_html: supEmailHtml
@@ -1429,7 +1468,7 @@ app.post('/api/absences', authenticate, (req, res) => {
                         titre: `Demande de congé transmise à votre intérimaire ${targetNom}`,
                         message: `L'employé ${emp.prenom} ${emp.nom} a soumis une demande de congé (${duree_jours}j). En raison de votre absence/congé, cette demande a été automatiquement transmise à votre intérimaire désigné ${targetNom} pour validation.`,
                         type: 'conge',
-                        lien: '#absences',
+                        lien: '#absences?tab=attente',
                         email_destinataire: supEmail,
                         email_sent: 1
                       });
@@ -1440,7 +1479,7 @@ app.post('/api/absences', authenticate, (req, res) => {
                         titre: `Demande transmise à votre responsable par intérim (${targetNom})`,
                         message: `Votre demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin} a été enregistrée. Votre responsable ${supNom} étant en congé ou absent, la demande a été automatiquement transmise à son intérimaire désigné ${targetNom} pour validation.`,
                         type: 'conge',
-                        lien: '#absences',
+                        lien: '#absences?tab=attente',
                         email_destinataire: emp.Email,
                         email_sent: 1
                       });
@@ -1451,7 +1490,7 @@ app.post('/api/absences', authenticate, (req, res) => {
                         titre: `Nouvelle demande de congé — ${emp.prenom} ${emp.nom}`,
                         message: `L'employé ${emp.prenom} ${emp.nom} (${emp.poste || emp.departement}) a soumis une demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin}. Votre validation en tant que responsable hiérarchique est requise pour transmission à la DRH.`,
                         type: 'conge',
-                        lien: '#absences',
+                        lien: '#absences?tab=attente',
                         email_destinataire: supEmail,
                         email_sent: 1,
                         email_html: supEmailHtml
@@ -1462,7 +1501,7 @@ app.post('/api/absences', authenticate, (req, res) => {
                         titre: `Demande de congé transmise à votre responsable`,
                         message: `Votre demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin} a été enregistrée avec succès. Elle a été transmise à votre chef ${supNom} pour validation préalable.`,
                         type: 'conge',
-                        lien: '#absences',
+                        lien: '#absences?tab=attente',
                         email_destinataire: emp.Email,
                         email_sent: 1
                       });
@@ -1524,7 +1563,7 @@ app.post('/api/absences', authenticate, (req, res) => {
               titre: `Confirmation Officielle — Congé Approuvé par la DRH`,
               message: `Félicitations ! Votre demande de congé ${oldRequest.type_conge} de ${oldRequest.duree_jours} jour(s) (du ${oldRequest.date_debut} au ${oldRequest.date_fin}) a été définitivement approuvée par la Direction des Ressources Humaines (${drhDecidePar}). Un email officiel de confirmation a été expédié à ${empEmail}.`,
               type: 'conge',
-              lien: '#absences',
+              lien: '#absences?tab=historique',
               email_destinataire: empEmail,
               email_sent: 1
             });
@@ -1543,7 +1582,7 @@ app.post('/api/absences', authenticate, (req, res) => {
                 titre: `Congé validé par la DRH — ${oldRequest.prenom} ${oldRequest.nom}`,
                 message: `La demande de congé de votre collaborateur ${oldRequest.prenom} ${oldRequest.nom} (${oldRequest.duree_jours}j du ${oldRequest.date_debut} au ${oldRequest.date_fin}) a été définitivement approuvée par la DRH (${drhDecidePar}).`,
                 type: 'conge',
-                lien: '#absences',
+                lien: '#absences?tab=historique',
                 email_destinataire: supEmail,
                 email_sent: supEmail ? 1 : 0
               });
@@ -1554,7 +1593,7 @@ app.post('/api/absences', authenticate, (req, res) => {
               titre: `Demande de congé refusée par la DRH`,
               message: `Votre demande de congé ${oldRequest.type_conge} de ${oldRequest.duree_jours} jour(s) du ${oldRequest.date_debut} au ${oldRequest.date_fin} a été refusée par la Direction des Ressources Humaines.`,
               type: 'conge',
-              lien: '#absences',
+              lien: '#absences?tab=historique',
               email_destinataire: empEmail,
               email_sent: 1
             });
@@ -1648,7 +1687,7 @@ app.post('/api/absences/:id/supervisor-decision', authenticate, async (req, res)
                   titre: `Congé validé par ${isActingAsInterim ? 'Intérimaire' : 'Manager'} — À approuver par la DRH`,
                   message: `${roleMention} a émis un avis FAVORABLE pour la demande de congé de ${reqRow.prenom} ${reqRow.nom} (${reqRow.duree_jours}j du ${reqRow.date_debut} au ${reqRow.date_fin}). Merci de procéder à la validation finale.`,
                   type: 'conge',
-                  lien: '#absences',
+                  lien: '#absences?tab=attente',
                   email_destinataire: 'drh@gica.dz',
                   email_sent: 1,
                   email_html: drhEmailHtml
@@ -1660,7 +1699,7 @@ app.post('/api/absences/:id/supervisor-decision', authenticate, async (req, res)
                   titre: `Avis Favorable de votre responsable ${isActingAsInterim ? 'par intérim ' : ''}${userNom}`,
                   message: `Votre responsable ${isActingAsInterim ? 'par intérim ' : ''}${userNom} a validé votre demande de congé de ${reqRow.duree_jours} jour(s). Votre dossier est maintenant transmis à la Direction des Ressources Humaines (DRH) pour confirmation finale.`,
                   type: 'conge',
-                  lien: '#absences',
+                  lien: '#absences?tab=attente',
                   email_destinataire: reqRow.Email,
                   email_sent: 1
                 });
@@ -1671,7 +1710,7 @@ app.post('/api/absences/:id/supervisor-decision', authenticate, async (req, res)
                   titre: `Avis défavorable sur votre demande de congé`,
                   message: `Votre responsable ${isActingAsInterim ? 'par intérim ' : ''}${userNom} a refusé votre demande de congé de ${reqRow.duree_jours} jour(s).`,
                   type: 'conge',
-                  lien: '#absences',
+                  lien: '#absences?tab=historique',
                   email_destinataire: reqRow.Email,
                   email_sent: 1
                 });
@@ -1929,7 +1968,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
                   titre: `Congé validé par Manager (${deciderNom}) — À approuver par la DRH`,
                   message: `Le responsable hiérarchique ${deciderNom} a émis un avis FAVORABLE en 1 clic pour la demande de congé de ${empNomComplet} (${absence.duree_jours}j du ${absence.date_debut} au ${absence.date_fin}). Validation finale requise.`,
                   type: 'conge',
-                  lien: '#absences',
+                  lien: '#absences?tab=attente',
                   email_destinataire: 'drh@gica.dz',
                   email_sent: 1,
                   email_html: drhEmailHtml
@@ -1941,7 +1980,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
                   titre: `Avis Favorable de votre responsable (${deciderNom})`,
                   message: `Votre responsable ${deciderNom} a émis un avis favorable en 1 clic pour votre demande de congé de ${absence.duree_jours} jour(s). Le dossier est maintenant transmis à la DRH pour décision finale.`,
                   type: 'conge',
-                  lien: '#absences',
+                  lien: '#absences?tab=attente',
                   email_destinataire: empEmail,
                   email_sent: 1
                 });
@@ -1952,7 +1991,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
                   titre: `Avis défavorable sur votre demande de congé`,
                   message: `Votre responsable ${deciderNom} a refusé votre demande de congé de ${absence.duree_jours} jour(s) (du ${absence.date_debut} au ${absence.date_fin}).`,
                   type: 'conge',
-                  lien: '#absences',
+                  lien: '#absences?tab=historique',
                   email_destinataire: empEmail,
                   email_sent: 1
                 });
@@ -2015,7 +2054,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
                   titre: `Confirmation Officielle — Congé Approuvé par la DRH`,
                   message: `Félicitations ! Votre demande de congé ${absence.type_conge} de ${absence.duree_jours} jour(s) (du ${absence.date_debut} au ${absence.date_fin}) a été définitivement approuvée par la Direction des Ressources Humaines (${signature}). Votre titre de congé officiel est disponible au téléchargement.`,
                   type: 'conge',
-                  lien: '#absences',
+                  lien: '#absences?tab=historique',
                   email_destinataire: empEmail,
                   email_sent: 1
                 });
@@ -2029,7 +2068,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
                       titre: `Congé validé par la DRH — ${empNomComplet}`,
                       message: `La demande de congé de votre collaborateur ${empNomComplet} (${absence.duree_jours}j du ${absence.date_debut} au ${absence.date_fin}) a été définitivement approuvée par la DRH.`,
                       type: 'conge',
-                      lien: '#absences',
+                      lien: '#absences?tab=historique',
                       email_destinataire: supEmp?.Email || null,
                       email_sent: supEmp?.Email ? 1 : 0
                     });
@@ -2041,7 +2080,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
                   titre: `Demande de congé refusée par la DRH`,
                   message: `Votre demande de congé ${absence.type_conge} de ${absence.duree_jours} jour(s) du ${absence.date_debut} au ${absence.date_fin} a été refusée par la Direction des Ressources Humaines.`,
                   type: 'conge',
-                  lien: '#absences',
+                  lien: '#absences?tab=historique',
                   email_destinataire: empEmail,
                   email_sent: 1
                 });

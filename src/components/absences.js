@@ -462,7 +462,7 @@ export const AbsencesComponent = {
     `;
   },
 
-  async init() {
+  async init(queryParams = {}) {
     if (window.lucide) window.lucide.createIcons();
 
     // Basculement des sous-onglets
@@ -488,6 +488,12 @@ export const AbsencesComponent = {
         }
       });
     });
+
+    // Activer automatiquement le sous-onglet demandé (ex: ?tab=attente ou ?tab=historique)
+    if (queryParams && queryParams.tab) {
+      const targetBtn = document.querySelector(`.sub-tab-btn[data-subview="${queryParams.tab}"]`);
+      if (targetBtn) targetBtn.click();
+    }
 
     const btnAdd = document.getElementById('btn-add-absence');
     if (btnAdd) {

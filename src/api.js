@@ -1,4 +1,6 @@
-const API_BASE = `http://${window.location.hostname}:8081/api`;
+// Support des tunnels distants (ngrok, etc.) et du proxy Vite local
+const isDirectBackend = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && window.location.port !== '8082';
+const API_BASE = isDirectBackend ? `http://${window.location.hostname}:8081/api` : '/api';
 const TOKEN_KEY = 'gica_hr_token';
 
 // --- Gestion du jeton d'authentification (JWT) ---
@@ -298,6 +300,7 @@ export const api = {
   // EventSource ne permet pas d'envoyer d'en-têtes personnalisés.
   eventsUrl() {
     const token = getToken();
-    return `http://${window.location.hostname}:8081/api/events?token=${encodeURIComponent(token || '')}`;
+    const baseUrl = isDirectBackend ? `http://${window.location.hostname}:8081` : '';
+    return `${baseUrl}/api/events?token=${encodeURIComponent(token || '')}`;
   }
 };

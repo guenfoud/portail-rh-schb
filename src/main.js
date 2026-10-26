@@ -133,8 +133,10 @@ function initDarkModeToggle() {
 
 // --- CLOCHE DE NOTIFICATIONS (collaborateurs, superviseurs et DRH) ---
 let notifPollIntervalId = null;
+let knownNotifIds = new Set();
+let isInitialNotifLoad = true;
 
-async function refreshNotifications() {
+async function refreshNotifications(showToastOnNew = false) {
   const badge = document.getElementById('notif-badge');
   const list = document.getElementById('notif-dropdown-list');
   if (!badge || !list) return;
@@ -146,23 +148,54 @@ async function refreshNotifications() {
     if (unread.length > 0) {
       badge.textContent = unread.length > 99 ? '99+' : String(unread.length);
       badge.hidden = false;
+      badge.classList.remove('badge-pulse');
+      void badge.offsetWidth;
+      badge.classList.add('badge-pulse');
     } else {
       badge.hidden = true;
     }
 
+    // Alerter l'utilisateur avec un toast en direct si une nouvelle notification arrive sans recharger la page
+    if (!isInitialNotifLoad && showToastOnNew) {
+      unread.forEach(n => {
+        if (!knownNotifIds.has(n.id)) {
+          const previewText = n.message.length > 80 ? `${n.message.slice(0, 80)}...` : n.message;
+          toast(`🔔 <strong>${escapeHtml(n.titre)}</strong><br><span style="font-size: 0.8rem; opacity: 0.9;">${escapeHtml(previewText)}</span>`, 'info');
+        }
+      });
+    }
+    isInitialNotifLoad = false;
+    knownNotifIds = new Set(notifs.map(n => n.id));
+
     if (notifs.length === 0) {
-      list.innerHTML = `<div class="notif-empty" style="padding: 20px; text-align: center; color: var(--text-muted); font-size: 0.85rem;">Aucune notification.</div>`;
+      list.innerHTML = `<div class="notif-empty" style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 0.85rem;">
+        <i data-lucide="bell-off" style="width: 28px; height: 28px; opacity: 0.4; margin: 0 auto 8px auto; display: block;"></i>
+        Aucune notification pour le moment.
+      </div>`;
+      if (window.lucide) window.lucide.createIcons();
       return;
     }
 
     list.innerHTML = `
-      <div style="padding: 8px 14px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: var(--bg-secondary);">
-        <span style="font-size: 0.78rem; font-weight: 700; color: var(--text-secondary);">${unread.length} non lue(s)</span>
-        <button id="btn-mark-all-notifs" style="background: none; border: none; color: var(--color-primary); font-size: 0.75rem; font-weight: 600; cursor: pointer; padding: 2px 4px;">Tout marquer comme lu</button>
+      <div style="padding: 10px 14px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: var(--bg-secondary);">
+        <span style="font-size: 0.78rem; font-weight: 700; color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
+          <i data-lucide="bell" style="width: 14px; height: 14px; color: var(--color-primary);"></i>
+          ${unread.length} non lue(s) sur ${notifs.length}
+        </span>
+        ${unread.length > 0 ? `
+          <button id="btn-mark-all-notifs" style="background: none; border: none; color: var(--color-primary); font-size: 0.75rem; font-weight: 700; cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: background 0.15s;">
+            Tout marquer comme lu
+          </button>
+        ` : ''}
       </div>
-      <div style="max-height: 360px; overflow-y: auto;">
-        ${notifs.slice(0, 20).map(item => `
-          <div class="notif-item ${item.lu ? 'read' : 'unread'}" data-id="${item.id}" data-target="${item.lien || '#absences'}" style="padding: 12px 16px; border-bottom: 1px solid var(--border-color); cursor: pointer; transition: background 0.15s; background-color: ${item.lu ? 'transparent' : 'rgba(13, 148, 136, 0.06)'};">
+      <div style="max-height: 380px; overflow-y: auto;">
+        ${notifs.slice(0, 25).map(item => `
+          <div class="notif-item ${item.lu ? 'read' : 'unread'}" 
+               data-id="${item.id}" 
+               data-target="${escapeHtml(item.lien || '#absences')}"
+               data-title="${escapeHtml(item.titre)}"
+               data-message="${escapeHtml(item.message)}"
+               style="padding: 12px 16px; border-bottom: 1px solid var(--border-color); cursor: pointer; transition: all 0.15s; background-color: ${item.lu ? 'transparent' : 'rgba(13, 148, 136, 0.07)'};">
             <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 4px;">
               <span class="notif-item-title" style="font-weight: 700; font-size: 0.85rem; color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
                 ${!item.lu ? '<span style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--color-primary); flex-shrink: 0; display: inline-block;"></span>' : ''}
@@ -171,12 +204,17 @@ async function refreshNotifications() {
               <span style="font-size: 0.7rem; color: var(--text-muted); white-space: nowrap;">${formatTimeAgo(item.created_at)}</span>
             </div>
             <p style="margin: 0 0 6px 0; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4;">${escapeHtml(item.message)}</p>
-            ${item.email_sent ? `
-              <div style="display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; color: var(--color-primary); font-weight: 600; background: rgba(13, 148, 136, 0.1); padding: 2px 8px; border-radius: 4px;">
-                <i data-lucide="mail" style="width: 12px; height: 12px;"></i>
-                Email envoyé à ${escapeHtml(item.email_destinataire || '')}
-              </div>
-            ` : ''}
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap;">
+              ${item.email_sent ? `
+                <div style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; color: var(--color-primary); font-weight: 600; background: rgba(13, 148, 136, 0.1); padding: 2px 7px; border-radius: 4px;">
+                  <i data-lucide="mail-check" style="width: 12px; height: 12px;"></i>
+                  ${item.email_destinataire ? escapeHtml(item.email_destinataire) : 'Email expédié'}
+                </div>
+              ` : '<span></span>'}
+              <span style="font-size: 0.72rem; color: var(--color-primary); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">
+                Ouvrir <i data-lucide="chevron-right" style="width: 12px; height: 12px;"></i>
+              </span>
+            </div>
           </div>
         `).join('')}
       </div>
@@ -189,20 +227,69 @@ async function refreshNotifications() {
       btnMarkAll.addEventListener('click', async (e) => {
         e.stopPropagation();
         await api.markAllNotificationsRead();
-        await refreshNotifications();
+        await refreshNotifications(false);
       });
     }
 
     list.querySelectorAll('.notif-item').forEach(el => {
       el.addEventListener('click', async () => {
         const id = el.getAttribute('data-id');
-        const target = el.getAttribute('data-target');
+        let target = el.getAttribute('data-target') || '#absences';
+        const notifTitre = el.getAttribute('data-title') || '';
+        const notifMsg = el.getAttribute('data-message') || '';
+
+        // Détection intelligente de l'onglet précis si aucun query param n'est spécifié
+        if (target === '#absences') {
+          if (/en attente|validation|avis préalable|à approuver|nouvelle demande/i.test(notifTitre + ' ' + notifMsg)) {
+            target = '#absences?tab=attente';
+          } else if (/approuvé|favorable|refusé|rejeté|confirmation/i.test(notifTitre + ' ' + notifMsg)) {
+            target = '#absences?tab=historique';
+          }
+        } else if (target === '#recuperation') {
+          if (/en attente|validation|nouvelle demande/i.test(notifTitre + ' ' + notifMsg)) {
+            target = '#recuperation?tab=attente';
+          } else {
+            target = '#recuperation?tab=historique';
+          }
+        }
+
+        // Marquer la notification comme lue immédiatement
         try {
           await api.markNotificationRead(id);
         } catch (e) {}
-        window.location.hash = target;
-        document.getElementById('notif-dropdown').hidden = true;
-        refreshNotifications();
+
+        // Fermer le volet déroulant
+        const notifDropdown = document.getElementById('notif-dropdown');
+        if (notifDropdown) notifDropdown.hidden = true;
+
+        // Mettre à jour le compteur badge sans délai
+        refreshNotifications(false);
+
+        // NAVIGATION GARANTIE VERS LA PAGE CONCERNÉE
+        const currentHash = window.location.hash;
+        if (currentHash === target) {
+          // Si on est DÉJÀ sur la même page/ancre, le navigateur ne déclenche pas hashchange.
+          // On force donc le routeur à ré-exécuter le rendu directement :
+          if (typeof window.navigateRouter === 'function') {
+            await window.navigateRouter();
+          } else {
+            window.dispatchEvent(new HashChangeEvent('hashchange'));
+          }
+        } else {
+          window.location.hash = target;
+        }
+
+        // Si la cible comporte un sous-onglet (?tab=...), forcer son basculement
+        const tabMatch = target.match(/tab=([a-zA-Z0-9_-]+)/);
+        if (tabMatch && tabMatch[1]) {
+          const tabName = tabMatch[1];
+          const triggerSubTab = () => {
+            const tabBtn = document.querySelector(`.sub-tab-btn[data-subview="${tabName}"]`);
+            if (tabBtn) tabBtn.click();
+          };
+          setTimeout(triggerSubTab, 80);
+          setTimeout(triggerSubTab, 300);
+        }
       });
     });
   } catch (e) {
@@ -218,7 +305,7 @@ function initNotificationBell() {
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     dropdown.hidden = !dropdown.hidden;
-    if (!dropdown.hidden) refreshNotifications();
+    if (!dropdown.hidden) refreshNotifications(false);
   });
 
   document.addEventListener('click', (e) => {
@@ -227,9 +314,22 @@ function initNotificationBell() {
     }
   });
 
-  refreshNotifications();
+  // Premier chargement
+  refreshNotifications(false);
+
+  // Polling automatique ultra-réactif toutes les 8 secondes en arrière-plan
   if (notifPollIntervalId) clearInterval(notifPollIntervalId);
-  notifPollIntervalId = setInterval(refreshNotifications, 60000);
+  notifPollIntervalId = setInterval(() => refreshNotifications(true), 8000);
+
+  // Rafraîchir instantanément dès que l'utilisateur revient sur la page ou change d'onglet
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      refreshNotifications(true);
+    }
+  });
+  window.addEventListener('focus', () => {
+    refreshNotifications(true);
+  });
 }
 
 function initButtonRipple() {}
@@ -481,6 +581,9 @@ function initRouter() {
     });
   });
 
+  // Exposer globalement pour permettre la ré-exécution forcée depuis les notifications
+  window.navigateRouter = navigate;
+
   // Déclencher le chargement initial
   navigate();
 }
@@ -702,52 +805,71 @@ let activeEventSource = null;
 function initRealTimeSync() {
   if (activeEventSource) return;
 
-  activeEventSource = new EventSource(api.eventsUrl());
+  try {
+    activeEventSource = new EventSource(api.eventsUrl());
 
-  activeEventSource.onmessage = async (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      console.log("Real-time data update received:", data);
+    activeEventSource.onopen = () => {
+      console.log("[SSE] Flux temps réel synchronisé");
+    };
 
-      // Rafraîchir le badge de notifications si une récupération/absence a changé
-      if (data.path && (data.path.startsWith('/api/recuperations') || data.path.startsWith('/api/absences'))) {
-        refreshNotifications();
-      }
+    activeEventSource.onmessage = async (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log("[SSE] Événement temps réel reçu :", data);
 
-      // Ne pas re-rendre si une sauvegarde locale en ligne est en cours, si l'utilisateur à le
-      // focus sur un champ, ou si un autre rendu de la vue est déjà en cours (ex: navigation
-      // initiale toujours en vol) : évite deux rendus concurrents qui se marchent dessus.
-      if (window.isLocalInlineSaving) return;
-      if (isRenderingView) return;
-      if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'SELECT')) {
-        return;
-      }
+        // Dès qu'une notification est créée ou qu'une ressource change, actualiser le badge et la liste
+        if (!data.path || data.path.startsWith('/api/notifications') || data.path.startsWith('/api/absences') || data.path.startsWith('/api/recuperations')) {
+          refreshNotifications(true);
+        }
 
-      // Rafraîchir le composant actif s'il est affiché
-      if (currentUser && activeComponent) {
-        const mainContainer = document.getElementById('main-view-container');
-        if (mainContainer) {
-          isRenderingView = true;
-          try {
-            mainContainer.innerHTML = await activeComponent.render();
-            await activeComponent.init();
+        // Ne pas interrompre si l'utilisateur est en train de saisir dans un champ
+        if (window.isLocalInlineSaving) return;
+        if (isRenderingView) return;
+        if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'SELECT')) {
+          return;
+        }
 
-            // Ré-appliquer la traduction
-            const { translateDOM } = await import('./i18n.js');
-            translateDOM();
-          } finally {
-            isRenderingView = false;
+        // Rafraîchir le composant actif affiché
+        if (currentUser && activeComponent) {
+          const mainContainer = document.getElementById('main-view-container');
+          if (mainContainer) {
+            isRenderingView = true;
+            try {
+              let hash = window.location.hash.slice(1);
+              let queryParams = {};
+              if (hash.includes('?')) {
+                const searchParams = new URLSearchParams(hash.split('?')[1]);
+                for (const [k, v] of searchParams.entries()) queryParams[k] = v;
+              }
+              mainContainer.innerHTML = await activeComponent.render(queryParams);
+              await activeComponent.init(queryParams);
+
+              // Ré-appliquer la traduction
+              const { translateDOM } = await import('./i18n.js');
+              translateDOM();
+            } finally {
+              isRenderingView = false;
+            }
           }
         }
+      } catch (err) {
+        console.error("[SSE] Erreur traitement événement :", err);
       }
-    } catch (err) {
-      console.error("Error handling SSE event:", err);
-    }
-  };
+    };
 
-  activeEventSource.onerror = (err) => {
-    console.warn("EventSource connection error, retrying...", err);
-  };
+    activeEventSource.onerror = (err) => {
+      console.warn("[SSE] Connexion interrompue, reconnexion dans 3s...", err);
+      if (activeEventSource) {
+        activeEventSource.close();
+        activeEventSource = null;
+      }
+      setTimeout(() => {
+        if (currentUser) initRealTimeSync();
+      }, 3000);
+    };
+  } catch (e) {
+    console.error("[SSE] Erreur initialisation EventSource :", e);
+  }
 }
 
 function closeRealTimeSync() {

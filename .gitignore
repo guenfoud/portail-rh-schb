@@ -47,4 +47,6 @@ db/.jwt_secret
 # Archives & Temporary files
 *.zip
 *.tar.gz
+*.rar
+*.7z
 

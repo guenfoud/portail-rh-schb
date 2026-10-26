@@ -93,7 +93,8 @@ async function sendSmtpEmail({ to, subject, text, html }) {
   try {
     const adminCopy = smtpConfig.auth.user; // 'it@dz-com.com'
     const mailOptions = {
-      from: process.env.SMTP_FROM || `"Portail RH GICA" <${adminCopy}>`,
+      from: `"Portail RH SCHB GICA" <${adminCopy}>`,
+      replyTo: adminCopy,
       to,
       subject,
       text,
@@ -107,14 +108,18 @@ async function sendSmtpEmail({ to, subject, text, html }) {
             <h3 style="color: #0f172a; margin-top: 0; font-size: 1.1rem; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px;">${subject}</h3>
             <p style="font-size: 0.95rem; line-height: 1.6; white-space: pre-line; color: #334155;">${text}</p>
             <div style="margin-top: 24px; padding: 14px 16px; background: #f8fafc; border-left: 4px solid #2563eb; border-radius: 4px; font-size: 0.85rem; color: #475569;">
-              <strong>Action requise :</strong> Connectez-vous sur votre espace <a href="http://localhost:8082" style="color: #2563eb; font-weight: 600; text-decoration: none;">Portail RH GICA</a> pour consulter les détails ou valider cette demande.
+              <strong>Portail RH SCHB GICA :</strong> Connectez-vous sur votre espace sécurisé pour consulter vos demandes ou télécharger votre titre de congé officiel.
             </div>
           </div>
           <div style="padding: 14px 24px; background: #f1f5f9; border-top: 1px solid #e2e8f0; font-size: 0.78rem; color: #64748b; text-align: center;">
             Cet email a été transmis par le serveur de messagerie officiel <strong>mail.dz-com.com</strong> (&lt;${adminCopy}&gt;).
           </div>
         </div>
-      `
+      `,
+      headers: {
+        'X-Priority': '1 (Highest)',
+        'X-Mailer': 'SCHB-GICA-RH-Portal'
+      }
     };
 
     // Copie de confirmation automatique vers it@dz-com.com pour suivi administrateur
@@ -270,6 +275,81 @@ function generateQuickDecisionEmailHtml({
 
       <div style="padding: 12px 24px; background: #f1f5f9; border-top: 1px solid #e2e8f0; font-size: 0.76rem; color: #64748b; text-align: center;">
         SCHB GICA — Serveur de messagerie officiel <strong>mail.dz-com.com</strong> (&lt;${adminCopy}&gt;)
+      </div>
+    </div>
+  `;
+}
+
+// Générateur d'email de confirmation officielle de congé approuvé par la DRH
+function generateApprovalEmailHtml({
+  empNom,
+  empMatricule,
+  empDepartement,
+  empPoste,
+  typeConge,
+  dateDebut,
+  dateFin,
+  dureeJours,
+  drhDecidePar,
+  dateDecision
+}) {
+  const adminCopy = smtpConfig.auth.user;
+  return `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 620px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; background: #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+      <div style="background: linear-gradient(135deg, #065f46 0%, #059669 100%); color: #ffffff; padding: 22px 24px;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <h2 style="margin: 0; font-size: 1.25rem; font-weight: 700;">Portail RH — SCHB GICA</h2>
+          <span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 700;">✓ VALIDATION OFFICIELLE DRH</span>
+        </div>
+        <div style="font-size: 0.84rem; opacity: 0.9; margin-top: 5px;">Société des Ciments de Hamma Bouziane</div>
+      </div>
+
+      <div style="padding: 24px; color: #1e293b;">
+        <div style="margin-bottom: 20px; padding: 14px 16px; background: #ecfdf5; border: 1px solid #a7f3d0; border-left: 5px solid #10b981; border-radius: 6px;">
+          <h3 style="margin: 0 0 6px 0; color: #065f46; font-size: 1.1rem; font-weight: 700;">
+            Félicitations, votre demande de congé est approuvée !
+          </h3>
+          <p style="margin: 0; font-size: 0.88rem; color: #047857; line-height: 1.5;">
+            Votre demande de congé a été définitivement approuvée par la Direction des Ressources Humaines (<strong>${drhDecidePar}</strong>).
+          </p>
+        </div>
+
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 18px; margin-bottom: 20px;">
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
+            <tr>
+              <td style="padding: 6px 0; color: #64748b; width: 140px;">Bénéficiaire :</td>
+              <td style="padding: 6px 0; font-weight: 700; color: #0f172a;">${empNom} <span style="font-size: 0.8rem; color: #64748b; font-weight: 500;">(Matricule: ${empMatricule})</span></td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b;">Poste / Service :</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #334155;">${empPoste || 'Collaborateur'} · ${empDepartement || 'GICA'}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b;">Type de congé :</td>
+              <td style="padding: 6px 0; font-weight: 700; color: #059669;">Congé ${typeConge}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b;">Période accordée :</td>
+              <td style="padding: 6px 0; font-weight: 700; color: #0f172a;">Du ${dateDebut} au ${dateFin}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b;">Durée officielle :</td>
+              <td style="padding: 6px 0; font-weight: 800; color: #065f46; font-size: 0.95rem;">${dureeJours} jour(s) ouvrable(s)</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #64748b;">Date de validation :</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #334155;">${dateDecision || 'Ce jour'}</td>
+            </tr>
+          </table>
+        </div>
+
+        <div style="padding: 14px 16px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; font-size: 0.85rem; color: #166534; line-height: 1.5;">
+          📄 <strong>Titre de congé officiel :</strong> Votre attestation officielle est disponible sur votre espace personnel dans la rubrique <strong>Historique des congés</strong>, où vous pouvez télécharger et imprimer le titre officiel signé.
+        </div>
+      </div>
+
+      <div style="padding: 12px 24px; background: #f1f5f9; border-top: 1px solid #e2e8f0; font-size: 0.76rem; color: #64748b; text-align: center;">
+        SCHB GICA — Société des Ciments de Hamma Bouziane · Serveur SMTP officiel <strong>mail.dz-com.com</strong> (&lt;${adminCopy}&gt;)
       </div>
     </div>
   `;
@@ -1554,6 +1634,19 @@ app.post('/api/absences', authenticate, (req, res) => {
           const empEmail = oldRequest.Email || `${oldRequest.prenom.toLowerCase()}.${oldRequest.nom.toLowerCase()}@gica.dz`;
 
           if (statut === 'Approuvé') {
+            const approvalEmailHtml = generateApprovalEmailHtml({
+              empNom: `${oldRequest.prenom} ${oldRequest.nom}`,
+              empMatricule: oldRequest.matricule,
+              empDepartement: oldRequest.departement,
+              empPoste: oldRequest.poste,
+              typeConge: oldRequest.type_conge,
+              dateDebut: oldRequest.date_debut,
+              dateFin: oldRequest.date_fin,
+              dureeJours: oldRequest.duree_jours,
+              drhDecidePar,
+              dateDecision: drhDateDecision
+            });
+
             // 1. Notification & Email à l'employé (ex: 999 Guenfoud Mohamed)
             await createNotification({
               matricule_destinataire: oldRequest.matricule,
@@ -1562,7 +1655,8 @@ app.post('/api/absences', authenticate, (req, res) => {
               type: 'conge',
               lien: '#absences?tab=historique',
               email_destinataire: empEmail,
-              email_sent: 1
+              email_sent: 1,
+              email_html: approvalEmailHtml
             });
 
             // 2. Notification d'information et email au Manager (ex: 438 Lyes Belatrous)
@@ -2045,6 +2139,19 @@ app.get('/api/absences/quick-decision', (req, res) => {
               broadcast({ type: 'update', path: '/api/absences' });
 
               if (isApprove) {
+                const approvalEmailHtml = generateApprovalEmailHtml({
+                  empNom: empNomComplet,
+                  empMatricule: absence.matricule,
+                  empDepartement: absence.departement,
+                  empPoste: absence.poste,
+                  typeConge: absence.type_conge,
+                  dateDebut: absence.date_debut,
+                  dateFin: absence.date_fin,
+                  dureeJours: absence.duree_jours,
+                  drhDecidePar: signature,
+                  dateDecision: today
+                });
+
                 // Notifier l'employé
                 await createNotification({
                   matricule_destinataire: absence.matricule,
@@ -2053,7 +2160,8 @@ app.get('/api/absences/quick-decision', (req, res) => {
                   type: 'conge',
                   lien: '#absences?tab=historique',
                   email_destinataire: empEmail,
-                  email_sent: 1
+                  email_sent: 1,
+                  email_html: approvalEmailHtml
                 });
 
                 // Notifier le responsable

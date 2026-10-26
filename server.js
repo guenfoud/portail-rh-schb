@@ -146,18 +146,14 @@ function createNotification({ matricule_destinataire, titre, message, type = 'co
           console.log(`[Notification/Email] Pour ${matricule_destinataire} : "${titre}" - Destinataire: ${email_destinataire || 'N/A'}`);
           broadcast({ type: 'update', path: '/api/notifications' });
 
-          // Envoi effectif de l'email via le serveur SMTP it@dz-com.com (attente séquentielle)
+          // Envoi effectif de l'email via le serveur SMTP en arrière-plan (non-bloquant)
           if (email_destinataire && email_sent) {
-            try {
-              await sendSmtpEmail({
-                to: email_destinataire,
-                subject: `[SCHB GICA] ${titre}`,
-                text: message,
-                html: email_html
-              });
-            } catch (smtpErr) {
-              console.error("[SMTP Async] Erreur :", smtpErr.message);
-            }
+            sendSmtpEmail({
+              to: email_destinataire,
+              subject: `[SCHB GICA] ${titre}`,
+              text: message,
+              html: email_html
+            }).catch(smtpErr => console.error("[SMTP Async] Erreur :", smtpErr.message));
           }
         }
         resolve(notifId);
@@ -1454,7 +1450,7 @@ app.post('/api/absences', authenticate, (req, res) => {
                       await createNotification({
                         matricule_destinataire: activeInterim.matricule_interimaire,
                         titre: `[Intérim de ${supNom}] Demande de congé — ${emp.prenom} ${emp.nom}`,
-                        message: `L'employé ${emp.prenom} ${emp.nom} (${emp.poste || emp.departement}) a soumis une demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin}. En tant qu'intérimaire désigné de ${supNom} (actuellement en congé/absent), votre validation préalable est requise pour transmission à la DRH.`,
+                        message: `L'employé ${emp.prenom} ${emp.nom} (${emp.poste || emp.departement}) a soumis une demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin}. En tant qu'intérimaire désigné de ${supNom}, votre validation préalable est requise pour transmission à la DRH.`,
                         type: 'conge',
                         lien: '#absences?tab=attente',
                         email_destinataire: targetEmail,
@@ -1462,22 +1458,23 @@ app.post('/api/absences', authenticate, (req, res) => {
                         email_html: supEmailHtml
                       });
 
-                      // 2. Notification d'information au Chef Titulaire
+                      // 2. Notification d'action au Chef Titulaire (reçoit TOUJOURS la demande dans son profil et par email)
                       await createNotification({
                         matricule_destinataire: supervisor.matricule,
-                        titre: `Demande de congé transmise à votre intérimaire ${targetNom}`,
-                        message: `L'employé ${emp.prenom} ${emp.nom} a soumis une demande de congé (${duree_jours}j). En raison de votre absence/congé, cette demande a été automatiquement transmise à votre intérimaire désigné ${targetNom} pour validation.`,
+                        titre: `Nouvelle demande de congé — ${emp.prenom} ${emp.nom}`,
+                        message: `L'employé ${emp.prenom} ${emp.nom} (${emp.poste || emp.departement}) a soumis une demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin}. Votre validation est requise (une copie a aussi été transmise à votre intérimaire ${targetNom}).`,
                         type: 'conge',
                         lien: '#absences?tab=attente',
                         email_destinataire: supEmail,
-                        email_sent: 1
+                        email_sent: 1,
+                        email_html: supEmailHtml
                       });
 
                       // 3. Notification de confirmation à l'employé
                       await createNotification({
                         matricule_destinataire: emp.matricule,
-                        titre: `Demande transmise à votre responsable par intérim (${targetNom})`,
-                        message: `Votre demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin} a été enregistrée. Votre responsable ${supNom} étant en congé ou absent, la demande a été automatiquement transmise à son intérimaire désigné ${targetNom} pour validation.`,
+                        titre: `Demande de congé enregistrée`,
+                        message: `Votre demande de congé ${type_conge} de ${duree_jours} jour(s) du ${date_debut} au ${date_fin} a été enregistrée. Elle a été transmise à votre chef ${supNom} et à son intérimaire désigné ${targetNom} pour validation.`,
                         type: 'conge',
                         lien: '#absences?tab=attente',
                         email_destinataire: emp.Email,
@@ -1569,7 +1566,7 @@ app.post('/api/absences', authenticate, (req, res) => {
             });
 
             // 2. Notification d'information et email au Manager (ex: 438 Lyes Belatrous)
-            const supMat = oldRequest.decide_par_superviseur || oldRequest.SuperieurMatricule;
+            const supMat = oldRequest.SuperieurMatricule;
             if (supMat) {
               const [supRows] = await new Promise((resP) => {
                 db.all("SELECT matricule, Nom, Prenom, Email FROM employees WHERE matricule = ?", [supMat], (e, r) => resP([r || []]));
@@ -2060,7 +2057,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
                 });
 
                 // Notifier le responsable
-                const supMat = absence.decide_par_superviseur || absence.SuperieurMatricule;
+                const supMat = absence.SuperieurMatricule;
                 if (supMat) {
                   db.get("SELECT Email FROM employees WHERE matricule = ?", [supMat], async (eS, supEmp) => {
                     await createNotification({

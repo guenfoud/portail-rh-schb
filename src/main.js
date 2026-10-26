@@ -9,6 +9,9 @@ import { TerminalComponent } from './components/terminal.js';
 import { SettingsComponent } from './components/settings.js';
 import { RecupeDetailComponent } from './components/recupedetail.js';
 import { OrganigrammeComponent } from './components/organigramme.js';
+import { BonsSortieComponent } from './components/bonssortie.js';
+import { SanteComponent } from './components/sante.js';
+import { AttestationsComponent } from './components/attestations.js';
 import { translateDOM } from './i18n.js';
 import { escapeHtml, formatTimeAgo } from './utils.js';
 
@@ -23,7 +26,10 @@ const routes = {
   calendar: CalendarComponent,
   terminal: TerminalComponent,
   settings: SettingsComponent,
-  recupedetail: RecupeDetailComponent
+  recupedetail: RecupeDetailComponent,
+  bonssortie: BonsSortieComponent,
+  sante: SanteComponent,
+  attestations: AttestationsComponent
 };
 
 let currentUser = null;
@@ -251,6 +257,16 @@ async function refreshNotifications(showToastOnNew = false) {
           } else {
             target = '#recuperation?tab=historique';
           }
+        } else if (target === '#bonssortie' || /bon de sortie/i.test(notifTitre + ' ' + notifMsg)) {
+          if (/nouveau|en attente|sollicité/i.test(notifTitre + ' ' + notifMsg)) {
+            target = '#bonssortie?tab=attente';
+          } else {
+            target = '#bonssortie?tab=mes-bons';
+          }
+        } else if (target === '#sante' || /habilitation|visite médicale|sécurité/i.test(notifTitre + ' ' + notifMsg)) {
+          target = '#sante';
+        } else if (target === '#attestations' || /attestation|document/i.test(notifTitre + ' ' + notifMsg)) {
+          target = '#attestations';
         }
 
         // Marquer la notification comme lue immédiatement
@@ -628,7 +644,25 @@ export function openModal(title, bodyHtml, onSave = null, footerButtons = null) 
 
   activeModalSaveCallback = onSave;
 
-  if (footerButtons) {
+  if (Array.isArray(onSave)) {
+    modalFooter.innerHTML = '';
+    onSave.forEach(btnConfig => {
+      const btn = document.createElement('button');
+      btn.className = btnConfig.class || 'btn btn-secondary';
+      btn.innerText = btnConfig.label;
+      if (btnConfig.onClick) {
+        btn.addEventListener('click', async () => {
+          const originalLabel = btn.innerText;
+          try {
+            await btnConfig.onClick();
+          } catch (e) {
+            console.error('Erreur action modal:', e);
+          }
+        });
+      }
+      modalFooter.appendChild(btn);
+    });
+  } else if (footerButtons) {
     modalFooter.innerHTML = footerButtons;
   } else {
     modalFooter.innerHTML = `

@@ -762,30 +762,58 @@ export const AbsencesComponent = {
         return;
       }
       try {
-        const conflicts = await api.getAbsenceConflicts(mat, dDeb, dFin);
-        if (conflicts && conflicts.length > 0) {
+        const [conflicts, empData] = await Promise.all([
+          api.getAbsenceConflicts(mat, dDeb, dFin),
+          api.getEmployee(mat).catch(() => null)
+        ]);
+
+        let quota = null;
+        if (empData && empData.departement) {
+          quota = await api.getDepartmentQuota(empData.departement, dDeb, dFin).catch(() => null);
+        }
+
+        const hasConflicts = conflicts && conflicts.length > 0;
+        const hasQuotaAlert = quota && quota.alerte_sous_effectif;
+
+        if (hasConflicts || hasQuotaAlert) {
           conflictContainer.style.display = 'block';
           conflictContainer.innerHTML = `
-            <div class="conflict-alert-box">
-              <div class="conflict-alert-title">
-                <i data-lucide="alert-triangle" style="width: 16px; height: 16px; color: #d97706;"></i>
-                Alerte de chevauchement d'équipe (${conflicts.length} collègue(s) absent(s))
+            ${hasQuotaAlert ? `
+              <div style="background: rgba(220, 38, 38, 0.08); border: 2px solid #dc2626; border-radius: 8px; padding: 12px; margin-bottom: 10px; color: #991b1b;">
+                <div style="display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 0.95rem;">
+                  <i data-lucide="shield-alert" style="width: 20px; height: 20px; color: #dc2626;"></i>
+                  <span>ALERTE QUOTA SÉCURITÉ INDUSTRIELLE (SCHB GICA)</span>
+                </div>
+                <div style="font-size: 0.85rem; margin-top: 6px; line-height: 1.45;">
+                  <strong>Attention :</strong> Le département <strong>${escapeHtml(quota.departement)}</strong> descendrait à 
+                  <strong>${quota.effectif_restant} présent(s)</strong> sur un effectif total de <strong>${quota.effectif_total}</strong> 
+                  (Seuil minimal de sécurité requis : <strong>${quota.seuil_minimum}</strong>).
+                </div>
+                <div style="font-size: 0.78rem; margin-top: 6px; font-style: italic; color: #b91c1c;">
+                  Risque d'arrêt ou de ralentissement de ligne de production. Le Chef de Service et la DRH devront valider sous dérogation.
+                </div>
               </div>
-              <div style="font-size: 0.82rem; margin-top: 4px;">
-                Attention : dans votre département, d'autres collaborateurs sont déjà programmés absents sur cette période :
+            ` : ''}
+
+            ${hasConflicts ? `
+              <div class="conflict-alert-box">
+                <div class="conflict-alert-title">
+                  <i data-lucide="alert-triangle" style="width: 16px; height: 16px; color: #d97706;"></i>
+                  Alerte de chevauchement d'équipe (${conflicts.length} collègue(s) absent(s))
+                </div>
+                <div style="font-size: 0.82rem; margin-top: 4px;">
+                  Attention : dans votre département, d'autres collaborateurs sont déjà programmés absents sur cette période :
+                </div>
+                <ul class="conflict-alert-list">
+                  ${conflicts.map(c => `
+                    <li>
+                      <strong>${escapeHtml(c.prenom)} ${escapeHtml(c.nom)}</strong> (${escapeHtml(c.poste || 'Collaborateur')}) : 
+                      du ${formatDateFR(c.date_debut)} au ${formatDateFR(c.date_fin)} (${escapeHtml(c.type_conge)})
+                    </li>
+                  `).join('')}
+                </ul>
               </div>
-              <ul class="conflict-alert-list">
-                ${conflicts.map(c => `
-                  <li>
-                    <strong>${escapeHtml(c.prenom)} ${escapeHtml(c.nom)}</strong> (${escapeHtml(c.poste || 'Collaborateur')}) : 
-                    du ${formatDateFR(c.date_debut)} au ${formatDateFR(c.date_fin)} (${escapeHtml(c.type_conge)})
-                  </li>
-                `).join('')}
-              </ul>
-              <div style="font-size: 0.78rem; margin-top: 6px; font-style: italic; color: #92400e;">
-                Risque de sous-effectif potentiel. Le responsable sera alerté lors de la validation.
-              </div>
-            </div>
+            ` : ''}
           `;
           if (window.lucide) window.lucide.createIcons({ root: conflictContainer });
         } else {
@@ -793,7 +821,7 @@ export const AbsencesComponent = {
           conflictContainer.innerHTML = '';
         }
       } catch (err) {
-        console.warn('Conflits check warning:', err);
+        console.warn('Conflits & Quota check warning:', err);
       }
     };
 

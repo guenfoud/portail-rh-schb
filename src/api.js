@@ -296,6 +296,83 @@ export const api = {
     });
   },
 
+  // --- Bons de Sortie & Ordres de mission ---
+  async getBonsSortie(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return await fetchJson(`${API_BASE}/bons-sortie${q ? '?' + q : ''}`);
+  },
+
+  async createBonSortie(data) {
+    return await fetchJson(`${API_BASE}/bons-sortie`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  async decideBonSortie(id, action) {
+    return await fetchJson(`${API_BASE}/bons-sortie/${id}/decision`, {
+      method: 'POST',
+      body: JSON.stringify({ action })
+    });
+  },
+
+  async pointageRetourBonSortie(id, heure_retour_reelle = null) {
+    return await fetchJson(`${API_BASE}/bons-sortie/${id}/retour`, {
+      method: 'POST',
+      body: JSON.stringify({ heure_retour_reelle })
+    });
+  },
+
+  // --- Santé au travail & Habilitations Sécurité HSE ---
+  async getHabilitations(params = {}) {
+    const q = new URLSearchParams(params).toString();
+    return await fetchJson(`${API_BASE}/habilitations${q ? '?' + q : ''}`);
+  },
+
+  async saveHabilitation(data) {
+    return await fetchJson(`${API_BASE}/habilitations`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  async deleteHabilitation(id) {
+    return await fetchJson(`${API_BASE}/habilitations/${id}`, {
+      method: 'DELETE'
+    });
+  },
+
+  async checkHabilitationAlerts() {
+    return await fetchJson(`${API_BASE}/habilitations/check-alerts`, {
+      method: 'POST'
+    });
+  },
+
+  // --- Demandes d'Attestations RH en 1 clic ---
+  async getAttestations() {
+    return await fetchJson(`${API_BASE}/attestations`);
+  },
+
+  async generateAttestation(data) {
+    return await fetchJson(`${API_BASE}/attestations/generate`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  // --- Primes Industrielles & Quotas d'effectifs ---
+  async getPrimesSummary(mois = null, departement = null) {
+    const params = new URLSearchParams();
+    if (mois) params.set('mois', mois);
+    if (departement) params.set('departement', departement);
+    return await fetchJson(`${API_BASE}/pointages/primes-summary?${params.toString()}`);
+  },
+
+  async getDepartmentQuota(departement, date_debut, date_fin) {
+    const params = new URLSearchParams({ departement, date_debut, date_fin });
+    return await fetchJson(`${API_BASE}/absences/department-quota?${params.toString()}`);
+  },
+
   // URL du flux temps réel (SSE), jeton transmis en paramètre de requête car
   // EventSource ne permet pas d'envoyer d'en-têtes personnalisés.
   eventsUrl() {

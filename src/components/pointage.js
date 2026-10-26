@@ -1194,15 +1194,18 @@ export const PointageComponent = {
             <p style="color: var(--text-secondary); font-size: 0.9rem;">Mois : ${document.getElementById('mensuel-mois').options[mois-1].text} ${annee} | Matricule: ${escapeHtml(matricule)}</p>
           </div>
           <div class="header-actions">
+            <button class="btn btn-primary" id="btn-fiche-mensuelle-signee" style="display: flex; align-items: center; gap: 8px; font-weight: 600;">
+              <i data-lucide="file-check"></i> Fiche Officielle Signée (PDF)
+            </button>
             <button class="btn btn-secondary" id="btn-print-mensuel">
-              <i data-lucide="printer"></i> Imprimer / PDF
+              <i data-lucide="printer"></i> Imprimer Relevé
             </button>
             <button class="btn btn-secondary" id="btn-export-mensuel-csv">
               <i data-lucide="download"></i> Exporter CSV
             </button>
             ${heuresSuppCumulees > 0 ? `
-              <button class="btn btn-primary" id="btn-crediter-recup" data-heures="${heuresSuppCumulees}">
-                <i data-lucide="award"></i> Créditer Récupérations (+${parseFloat((heuresSuppCumulees / 8).toFixed(2))}j)
+              <button class="btn btn-secondary" id="btn-crediter-recup" data-heures="${heuresSuppCumulees}" style="color: #16a34a; border-color: #16a34a;">
+                <i data-lucide="award"></i> Créditer Récup (+${parseFloat((heuresSuppCumulees / 8).toFixed(2))}j)
               </button>
             ` : ''}
           </div>
@@ -1277,12 +1280,25 @@ export const PointageComponent = {
         });
       }
 
+      const btnFicheSignee = document.getElementById('btn-fiche-mensuelle-signee');
+      if (btnFicheSignee) {
+        btnFicheSignee.addEventListener('click', () => {
+          this.openSignedMonthlySheetModal(emp, pointagesMois, mois, annee, {
+            joursTravailles,
+            heuresTravaillees,
+            minutesRetard,
+            heuresSuppCumulees,
+            anomaliesCount
+          });
+        });
+      }
+
       document.getElementById('btn-export-mensuel-csv').addEventListener('click', () => {
         this.exportMonthlySheetToCSV(emp, pointagesMois);
       });
 
       document.getElementById('btn-print-mensuel').addEventListener('click', () => {
-        window.print(); // Déclenche l'aperçu avant impression PDF stylisé
+        window.print();
       });
 
     } catch (err) {
@@ -1437,33 +1453,53 @@ export const PointageComponent = {
           }
         });
 
+        // Calcul des primes industrielles conventionnelles SCHB GICA
+        const primePanier = pp * 600; // 600 DA / jour pointé
+        const primeTransport = pp * 400; // 400 DA / jour pointé
+        const shiftsNuit = Math.ceil(pn / 8);
+        const primeNuit = shiftsNuit * 800; // 800 DA / shift nuit
+        const totalPrimes = primePanier + primeTransport + primeNuit;
+
         return {
           matricule: escapeHtml(emp.matricule),
           nom: escapeHtml(emp.nom),
           prenom: escapeHtml(emp.prenom),
+          departement: escapeHtml(emp.departement || '-'),
           ca: ca || '-',
           cm: cm || '-',
           mat: mat || '-',
           css: css || '-',
           ce: ce || '-',
           pn: pn || '-',
-          pp: pp || '-',
+          pp: pp || 0,
           hs50: hs50 || '-',
           hs75: hs75 || '-',
-          hs100: hs100 || '-'
+          hs100: hs100 || '-',
+          primePanier,
+          primeTransport,
+          shiftsNuit,
+          primeNuit,
+          totalPrimes
         };
       });
 
       const nomMois = document.getElementById('recap-mois').options[mois-1].text;
 
+      // Totaux généraux de l'usine pour le mois
+      const totalJoursUsine = recapData.reduce((acc, r) => acc + (typeof r.pp === 'number' ? r.pp : 0), 0);
+      const totalPanierUsine = recapData.reduce((acc, r) => acc + r.primePanier, 0);
+      const totalTransportUsine = recapData.reduce((acc, r) => acc + r.primeTransport, 0);
+      const totalNuitUsine = recapData.reduce((acc, r) => acc + r.primeNuit, 0);
+      const totalPrimesUsine = recapData.reduce((acc, r) => acc + r.totalPrimes, 0);
+
       // Afficher dans l'interface
       container.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; gap: 12px;">
           <div>
-            <h3 style="font-weight: 800; font-size: 1.25rem; color: var(--color-secondary);">Mouvement Personnel - Récapitulatif de Paie</h3>
-            <p style="color: var(--text-secondary); font-size: 0.9rem;">Période : ${nomMois} ${annee}</p>
+            <h3 style="font-weight: 800; font-size: 1.25rem; color: var(--color-secondary); margin: 0 0 4px;">Mouvement Personnel & Primes Industrielles (SCHB GICA)</h3>
+            <p style="color: var(--text-secondary); font-size: 0.9rem; margin: 0;">Période : ${nomMois} ${annee} • Convention Collective Cimenteries</p>
           </div>
-          <div style="display: flex; gap: 10px;">
+          <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <button class="btn btn-secondary" id="btn-excel-recap-action" style="display: flex; align-items: center; gap: 8px; background-color: #16a34a; border-color: #16a34a; color: #fff;">
               <i data-lucide="file-spreadsheet"></i> Exporter Excel (XLSX)
             </button>
@@ -1473,41 +1509,57 @@ export const PointageComponent = {
           </div>
         </div>
 
+        <!-- 4 KPI Métier Primes Cimenterie -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 20px;">
+          <div style="background: rgba(19, 84, 122, 0.08); border-left: 4px solid var(--primary); padding: 14px; border-radius: 8px;">
+            <div style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 700;">Jours Travaillés Usine</div>
+            <div style="font-size: 1.4rem; font-weight: 800; color: var(--primary);">${totalJoursUsine} j</div>
+          </div>
+          <div style="background: rgba(2, 132, 199, 0.08); border-left: 4px solid #0284c7; padding: 14px; border-radius: 8px;">
+            <div style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 700;">Total Prime Panier (600 DA)</div>
+            <div style="font-size: 1.4rem; font-weight: 800; color: #0284c7;">${totalPanierUsine.toLocaleString()} DA</div>
+          </div>
+          <div style="background: rgba(22, 163, 74, 0.08); border-left: 4px solid #16a34a; padding: 14px; border-radius: 8px;">
+            <div style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 700;">Total Indemnité Transport (400 DA)</div>
+            <div style="font-size: 1.4rem; font-weight: 800; color: #16a34a;">${totalTransportUsine.toLocaleString()} DA</div>
+          </div>
+          <div style="background: rgba(124, 58, 237, 0.08); border-left: 4px solid #7c3aed; padding: 14px; border-radius: 8px;">
+            <div style="font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; font-weight: 700;">Total Primes Industrielles</div>
+            <div style="font-size: 1.4rem; font-weight: 900; color: #7c3aed;">${totalPrimesUsine.toLocaleString()} DA</div>
+          </div>
+        </div>
+
         <div class="table-container" style="margin-top: 0; overflow-x: auto;">
           <table class="custom-table" style="font-size: 0.8rem; text-align: center;">
             <thead>
-              <tr>
+              <tr style="background: var(--bg-secondary);">
                 <th>Matricule</th>
-                <th>Nom</th>
-                <th>Prénom</th>
+                <th>Nom & Prénom</th>
                 <th title="Congé Annuel">CA</th>
                 <th title="Congé Maladie">CM</th>
-                <th title="Congé de Maternité">Maternité</th>
                 <th title="Sans Solde">CSS</th>
-                <th title="Congé Exceptionnel / Spécial">CE</th>
-                <th title="Prime de Nuit (heures)">PN</th>
-                <th title="Prime Panier (jours)">PP</th>
-                <th>HS 50%</th>
-                <th>HS 75%</th>
-                <th>HS 100%</th>
+                <th title="Jours Pointés">Jours</th>
+                <th title="Heures Supp Total">HS Total</th>
+                <th style="background: rgba(2, 132, 199, 0.08); color: #0284c7;" title="600 DA / jour">Panier (600 DA)</th>
+                <th style="background: rgba(22, 163, 74, 0.08); color: #16a34a;" title="400 DA / jour">Transport (400 DA)</th>
+                <th style="background: rgba(245, 158, 11, 0.08); color: #b45309;" title="800 DA / poste nuit">Poste Nuit (800 DA)</th>
+                <th style="background: rgba(124, 58, 237, 0.12); font-weight: 800; color: #7c3aed;">Total Primes</th>
               </tr>
             </thead>
             <tbody>
               ${recapData.map(row => `
                 <tr>
                   <td style="font-weight: 700; color: var(--color-primary);">${row.matricule}</td>
-                  <td style="font-weight: 600; text-align: left;">${row.nom}</td>
-                  <td style="font-weight: 600; text-align: left;">${row.prenom}</td>
+                  <td style="font-weight: 600; text-align: left;">${row.nom} ${row.prenom}</td>
                   <td style="color: ${row.ca !== '-' ? 'var(--color-info)' : 'inherit'}; font-weight: ${row.ca !== '-' ? 'bold' : 'normal'};">${row.ca}</td>
                   <td style="color: ${row.cm !== '-' ? 'var(--color-danger)' : 'inherit'}; font-weight: ${row.cm !== '-' ? 'bold' : 'normal'};">${row.cm}</td>
-                  <td style="color: ${row.mat !== '-' ? 'var(--color-warning)' : 'inherit'}; font-weight: ${row.mat !== '-' ? 'bold' : 'normal'};">${row.mat}</td>
                   <td>${row.css}</td>
-                  <td>${row.ce}</td>
-                  <td style="color: ${row.pn !== '-' ? 'var(--color-primary)' : 'inherit'}; font-weight: ${row.pn !== '-' ? 'bold' : 'normal'};">${row.pn}</td>
-                  <td style="font-weight: ${row.pp !== '-' ? 'bold' : 'normal'};">${row.pp}</td>
-                  <td style="color: ${row.hs50 !== '-' ? 'var(--color-success)' : 'inherit'}; font-weight: ${row.hs50 !== '-' ? 'bold' : 'normal'};">${row.hs50}</td>
-                  <td style="color: ${row.hs75 !== '-' ? 'var(--color-success)' : 'inherit'}; font-weight: ${row.hs75 !== '-' ? 'bold' : 'normal'};">${row.hs75}</td>
-                  <td style="color: ${row.hs100 !== '-' ? 'var(--color-success)' : 'inherit'}; font-weight: ${row.hs100 !== '-' ? 'bold' : 'normal'};">${row.hs100}</td>
+                  <td style="font-weight: 700;">${row.pp}</td>
+                  <td style="color: #16a34a; font-weight: 600;">${(typeof row.hs50 === 'number' ? row.hs50 : 0) + (typeof row.hs75 === 'number' ? row.hs75 : 0) + (typeof row.hs100 === 'number' ? row.hs100 : 0)} h</td>
+                  <td style="font-weight: 600; color: #0284c7;">${row.primePanier.toLocaleString()} DA</td>
+                  <td style="font-weight: 600; color: #16a34a;">${row.primeTransport.toLocaleString()} DA</td>
+                  <td style="font-weight: 600; color: #b45309;">${row.primeNuit > 0 ? row.primeNuit.toLocaleString() + ' DA' : '-'}</td>
+                  <td style="font-weight: 800; color: #7c3aed; background: rgba(124, 58, 237, 0.04);">${row.totalPrimes.toLocaleString()} DA</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -1867,5 +1919,178 @@ export const PointageComponent = {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  },
+
+  openSignedMonthlySheetModal(emp, pointages, mois, annee, stats) {
+    const moisNoms = [
+      'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+      'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+    ];
+    const nomMois = moisNoms[mois - 1] || `Mois ${mois}`;
+
+    const primePanier = stats.joursTravailles * 600;
+    const primeTransport = stats.joursTravailles * 400;
+    const shiftsNuit = pointages.filter(p => p.shift_type === 'nuit' || (p.heure_entree && p.heure_entree >= '20:30')).length;
+    const primeNuit = shiftsNuit * 800;
+    const totalPrimes = primePanier + primeTransport + primeNuit;
+
+    const modalHtml = `
+      <div id="printable-monthly-sheet" style="background: white; color: #0f172a; padding: 24px; font-family: 'Inter', Arial, sans-serif; border: 1px solid #cbd5e1; border-radius: 4px; max-width: 820px; margin: 0 auto;">
+        
+        <!-- En-Tête Officiel Cimenterie SCHB GICA -->
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 16px;">
+          <div>
+            <div style="font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: #475569;">République Algérienne Démocratique et Populaire</div>
+            <div style="font-size: 0.85rem; font-weight: 800; color: #0f172a;">GROUPE INDUSTRIEL DES CIMENTS D'ALGÉRIE (GICA)</div>
+            <div style="font-size: 1.05rem; font-weight: 900; color: #13547a;">SOCIÉTÉ DES CIMENTS DE HAMMA BOUZIANE — SCHB</div>
+            <div style="font-size: 0.8rem; color: #64748b;">Direction des Ressources Humaines • Service Administration du Personnel</div>
+          </div>
+          <div style="text-align: right;">
+            <div style="border: 2px solid #13547a; padding: 6px 12px; border-radius: 4px; font-weight: 800; color: #13547a; font-size: 0.9rem;">
+              FICHE DE POINTAGE MENSUELLE
+            </div>
+            <div style="font-size: 0.8rem; font-weight: 700; margin-top: 4px;">PÉRIODE : ${nomMois.toUpperCase()} ${annee}</div>
+          </div>
+        </div>
+
+        <!-- Encadré Employé -->
+        <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; font-size: 0.88rem;">
+          <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
+            <div><span style="color: #64748b;">Salarié :</span> <strong>${escapeHtml(emp.prenom)} ${escapeHtml(emp.nom)}</strong></div>
+            <div><span style="color: #64748b;">Matricule :</span> <strong>#${escapeHtml(emp.matricule)}</strong></div>
+            <div><span style="color: #64748b;">Département :</span> <strong>${escapeHtml(emp.departement || '-')}</strong></div>
+            <div><span style="color: #64748b;">Poste :</span> <strong>${escapeHtml(emp.poste || '-')}</strong></div>
+          </div>
+        </div>
+
+        <!-- Récapitulatif Heures & Primes Conventionnelles Cimenterie -->
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; text-align: center; font-size: 0.85rem;">
+          <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; background: #fff;">
+            <div style="color: #64748b; font-size: 0.75rem; text-transform: uppercase;">Jours Travaillés</div>
+            <div style="font-size: 1.25rem; font-weight: 800; color: #13547a;">${stats.joursTravailles} j</div>
+          </div>
+          <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; background: #fff;">
+            <div style="color: #64748b; font-size: 0.75rem; text-transform: uppercase;">Total Heures</div>
+            <div style="font-size: 1.25rem; font-weight: 800; color: #13547a;">${stats.heuresTravaillees.toFixed(1)} h</div>
+          </div>
+          <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; background: #fff;">
+            <div style="color: #64748b; font-size: 0.75rem; text-transform: uppercase;">Heures Supp</div>
+            <div style="font-size: 1.25rem; font-weight: 800; color: #16a34a;">+${stats.heuresSuppCumulees} h</div>
+          </div>
+          <div style="border: 1px solid #7c3aed; border-radius: 6px; padding: 8px; background: rgba(124, 58, 237, 0.05);">
+            <div style="color: #7c3aed; font-size: 0.75rem; text-transform: uppercase; font-weight: 700;">Primes Conventionnelles</div>
+            <div style="font-size: 1.25rem; font-weight: 900; color: #7c3aed;">${totalPrimes.toLocaleString()} DA</div>
+          </div>
+        </div>
+
+        <!-- Détail Primes Cimenterie -->
+        <div style="background: rgba(19,84,122,0.04); border: 1px solid rgba(19,84,122,0.15); border-radius: 6px; padding: 8px 14px; margin-bottom: 16px; font-size: 0.8rem; display: flex; justify-content: space-around;">
+          <div>Prime Panier (600 DA/j) : <strong>${primePanier.toLocaleString()} DA</strong> (${stats.joursTravailles} jours)</div>
+          <div>Indemnité Transport (400 DA/j) : <strong>${primeTransport.toLocaleString()} DA</strong></div>
+          <div>Prime Quart / Nuit (800 DA) : <strong>${primeNuit.toLocaleString()} DA</strong> (${shiftsNuit} postes)</div>
+        </div>
+
+        <!-- Tableau des Pointages du Mois -->
+        <div style="margin-bottom: 20px; max-height: 380px; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 4px;">
+          <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: center;">
+            <thead>
+              <tr style="background: #f1f5f9; border-bottom: 1px solid #cbd5e1; font-weight: 700;">
+                <th style="padding: 6px 8px; text-align: left;">Date</th>
+                <th style="padding: 6px 8px;">Entrée</th>
+                <th style="padding: 6px 8px;">Sortie</th>
+                <th style="padding: 6px 8px;">Durée</th>
+                <th style="padding: 6px 8px;">Retard</th>
+                <th style="padding: 6px 8px;">Heures Supp</th>
+                <th style="padding: 6px 8px;">Shift</th>
+                <th style="padding: 6px 8px; text-align: left;">Observations</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${pointages.length === 0 ? `
+                <tr><td colspan="8" style="padding: 16px; color: #64748b;">Aucun enregistrement de pointage pour ce mois.</td></tr>
+              ` : pointages.map(p => `
+                <tr style="border-bottom: 1px solid #e2e8f0;">
+                  <td style="padding: 5px 8px; text-align: left; font-weight: 600;">${formatDateFR(p.date)}</td>
+                  <td style="padding: 5px 8px;">${p.heure_entree || '--:--'}</td>
+                  <td style="padding: 5px 8px;">${p.heure_sortie || '--:--'}</td>
+                  <td style="padding: 5px 8px; font-weight: 600;">${p.heures_travaillees ? p.heures_travaillees + 'h' : '-'}</td>
+                  <td style="padding: 5px 8px; color: ${p.retard > 0 ? '#d97706' : 'inherit'};">${p.retard > 0 ? p.retard + 'm' : '-'}</td>
+                  <td style="padding: 5px 8px; color: ${p.heures_supp > 0 ? '#16a34a' : 'inherit'}; font-weight: ${p.heures_supp > 0 ? '700' : 'normal'};">${p.heures_supp > 0 ? '+' + p.heures_supp + 'h' : '-'}</td>
+                  <td style="padding: 5px 8px;">${escapeHtml(p.shift_type || 'jour')}</td>
+                  <td style="padding: 5px 8px; text-align: left; font-size: 0.75rem; color: #64748b;">${escapeHtml(p.notes || '')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Blocs de Signature Officiels -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; font-size: 0.85rem;">
+          <div style="border: 1px dashed #94a3b8; border-radius: 6px; padding: 12px; height: 110px; display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              <div style="font-weight: 800; color: #0f172a;">Émargement du Salarié</div>
+              <div style="font-size: 0.72rem; color: #64748b;">Mention manuscrite « Lu et approuvé, certifié exact »</div>
+            </div>
+            <div style="font-size: 0.72rem; color: #94a3b8; border-top: 1px dotted #cbd5e1; padding-top: 4px;">
+              Date : ____ / ____ / ${annee} • Signature :
+            </div>
+          </div>
+
+          <div style="border: 2px solid #13547a; background: rgba(19,84,122,0.02); border-radius: 6px; padding: 12px; height: 110px; display: flex; flex-direction: column; justify-content: space-between;">
+            <div>
+              <div style="font-weight: 800; color: #13547a;">Visa Chef de Service & Direction RH</div>
+              <div style="font-size: 0.72rem; color: #64748b;">Validé pour prise en compte en paie • SCHB GICA</div>
+            </div>
+            <div style="font-size: 0.72rem; color: #13547a; font-weight: 700; border-top: 1px dotted rgba(19,84,122,0.3); padding-top: 4px;">
+              Date : ____ / ____ / ${annee} • Cachet & Signature :
+            </div>
+          </div>
+        </div>
+
+        <!-- Bas de page légal -->
+        <div style="margin-top: 16px; border-top: 1px solid #cbd5e1; padding-top: 8px; font-size: 0.7rem; color: #64748b; text-align: center;">
+          Document officiel généré par le Portail RH SCHB GICA • Conforme à la Convention Collective de la Cimenterie
+        </div>
+      </div>
+    `;
+
+    openModal(
+      `Fiche Mensuelle Signée — ${emp.prenom} ${emp.nom} (${nomMois} ${annee})`,
+      modalHtml,
+      [
+        {
+          label: 'Fermer',
+          class: 'btn btn-secondary',
+          onClick: () => closeModal()
+        },
+        {
+          label: 'Imprimer / Exporter en PDF',
+          class: 'btn btn-primary',
+          onClick: () => {
+            const printContent = document.getElementById('printable-monthly-sheet').outerHTML;
+            const win = window.open('', '_blank');
+            win.document.write(`
+              <html>
+                <head>
+                  <title>Fiche de Pointage Mensuelle — ${emp.prenom} ${emp.nom} — SCHB GICA</title>
+                  <style>
+                    body { margin: 20px; font-family: Arial, sans-serif; }
+                    @media print {
+                      body { margin: 0; }
+                      @page { size: A4 portrait; margin: 10mm; }
+                    }
+                  </style>
+                </head>
+                <body onload="window.print(); window.close();">
+                  ${printContent}
+                </body>
+              </html>
+            `);
+            win.document.close();
+          }
+        }
+      ]
+    );
   }
 };
+

@@ -3,6 +3,7 @@ import mysql from 'mysql2/promise';
 import fs from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -209,6 +210,51 @@ export async function initDB() {
         INDEX idx_titulaire (matricule_titulaire),
         INDEX idx_interimaire (matricule_interimaire)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+      CREATE TABLE IF NOT EXISTS bons_sortie (
+        id VARCHAR(64) PRIMARY KEY,
+        matricule VARCHAR(50) NOT NULL,
+        date_sortie VARCHAR(20) NOT NULL,
+        heure_depart VARCHAR(10) NOT NULL,
+        heure_retour_prevue VARCHAR(10) NOT NULL,
+        heure_retour_reelle VARCHAR(10) NULL,
+        duree_heures DOUBLE NOT NULL,
+        type_sortie ENUM('Personnel', 'Professionnel', 'Mission', 'Médical') DEFAULT 'Personnel',
+        motif TEXT,
+        destination VARCHAR(255) NULL,
+        statut ENUM('En attente', 'Validé', 'Refusé', 'Clôturé') DEFAULT 'En attente',
+        valide_par VARCHAR(100) NULL,
+        date_validation DATETIME NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_bs_mat (matricule),
+        INDEX idx_bs_date (date_sortie)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+      CREATE TABLE IF NOT EXISTS habilitations (
+        id VARCHAR(64) PRIMARY KEY,
+        matricule VARCHAR(50) NOT NULL,
+        type_habilitation VARCHAR(100) NOT NULL,
+        organisme_delivreur VARCHAR(150) NULL,
+        date_obtention VARCHAR(20) NOT NULL,
+        date_expiration VARCHAR(20) NOT NULL,
+        numero_certificat VARCHAR(100) NULL,
+        statut ENUM('Valide', 'Expire_Bientot', 'Expire') DEFAULT 'Valide',
+        remarques TEXT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_hab_mat (matricule),
+        INDEX idx_hab_exp (date_expiration)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+      CREATE TABLE IF NOT EXISTS demandes_documents (
+        id VARCHAR(64) PRIMARY KEY,
+        matricule VARCHAR(50) NOT NULL,
+        type_document ENUM('Attestation_Travail', 'Releve_Emoluments', 'Certificat_Travail', 'Titre_Conge') NOT NULL,
+        motif VARCHAR(255) NULL,
+        statut ENUM('Prêt', 'En cours', 'Rejeté') DEFAULT 'Prêt',
+        reference_doc VARCHAR(100) NOT NULL,
+        genere_a DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_doc_mat (matricule)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     `);
 
     console.log(`[MySQL] Tables de la base '${dbConfig.database}' prêtes.`);
@@ -225,11 +271,16 @@ export async function initDB() {
     await ensureColumn('recuperations', 'decide_par_superviseur', 'VARCHAR(100) DEFAULT NULL');
     await ensureColumn('recuperations', 'date_decision_superviseur', 'VARCHAR(20) DEFAULT NULL');
 
+    try {
+      await pool.query("ALTER TABLE user_notifications MODIFY COLUMN type VARCHAR(50) DEFAULT 'conge'");
+    } catch (e) {}
+
     // 4. Importation automatique depuis database.sqlite si disponible
     await migrateFromSQLiteIfAvailable();
 
     // 5. Injection des données par défaut si la base MySQL est toujours vide
     await seedDefaultDataIfEmpty();
+    await seedSampleHabilitationsIfEmpty();
 
     return pool;
   } catch (err) {
@@ -350,6 +401,33 @@ async function seedDefaultDataIfEmpty() {
 
   await pool.query("INSERT INTO settings (`key`, `value`) VALUES ('config', ?)", [JSON.stringify(defaultSettings)]);
   console.log("[MySQL Seed] Données de démonstration prêtes.");
+}
+
+async function seedSampleHabilitationsIfEmpty() {
+  try {
+    const [rows] = await pool.query("SELECT COUNT(*) as count FROM habilitations");
+    if (rows && rows[0].count > 0) return;
+
+    const sample = [
+      [randomUUID(), '999', 'Visite Médicale Périodique Aptitude au Poste', 'Médecine du Travail SCHB GICA', '2025-11-15', '2026-11-15', 'MED-2025-999', 'Valide', 'Apte sans restriction - Écran & BDD'],
+      [randomUUID(), '999', 'Habilitation Électrique B0 / H0V (Locaux Serveurs)', 'Apave Algérie', '2024-12-01', '2026-12-01', 'ELEC-B0-999', 'Valide', 'Salles serveurs IT et baies réseau'],
+      [randomUUID(), '1003', 'Habilitation Électrique B2V / BR / BC Haute Tension', 'Bureau Veritas Algérie', '2023-11-20', '2026-11-20', 'HAB-ELEC-2023-1003', 'Expire_Bientot', 'Renouvellement requis avant le 20/11/2026'],
+      [randomUUID(), '1005', 'CACES R482 Engins de Chantier Cimenterie (Chargeuse & Dumper)', 'Centre Formation SCHB', '2023-10-10', '2026-10-10', 'CACES-2023-1005', 'Expire', 'Permis engin expiré - Programmer recyclage prioritaire'],
+      [randomUUID(), '1005', 'Visite Médicale Périodique Sécurité Broyeur', 'Médecine du Travail SCHB', '2026-02-10', '2027-02-10', 'MED-2026-1005', 'Valide', 'Audiométrie & vision normales'],
+      [randomUUID(), '438', 'Visite Médicale Périodique IT Manager', 'Médecine du Travail SCHB GICA', '2026-01-15', '2027-01-15', 'MED-2026-438', 'Valide', 'Apte au poste de responsable'],
+      [randomUUID(), '1001', 'Secouriste Sauveteur du Travail (SST Cimenterie)', 'Croissant Rouge / Protection Civile', '2024-11-05', '2026-11-05', 'SST-2024-1001', 'Expire_Bientot', 'Recyclage 2 ans à planifier'],
+      [randomUUID(), '1056', 'Autorisation Travaux en Hauteur & Espaces Confinés (Silos/Fours)', 'HSE SCHB', '2025-06-01', '2026-06-01', 'HSE-HAUT-1056', 'Expire', 'Visite médicale spécifique requise avant renouvellement']
+    ];
+
+    for (const h of sample) {
+      await pool.query(`INSERT INTO habilitations
+        (id, matricule, type_habilitation, organisme_delivreur, date_obtention, date_expiration, numero_certificat, statut, remarques)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, h);
+    }
+    console.log("[MySQL Seed] Habilitations et Visites Médicales initiales injectées.");
+  } catch (err) {
+    console.error("[MySQL Seed] Erreur seed habilitations :", err.message);
+  }
 }
 
 // Wrapper de compatibilité pour server.js

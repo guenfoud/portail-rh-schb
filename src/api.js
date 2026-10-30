@@ -71,6 +71,14 @@ export const api = {
     return data;
   },
 
+  // Mot de passe (première connexion ou changement volontaire)
+  async changePassword(current_password, new_password) {
+    return await fetchJson(`${API_BASE}/me/password`, {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password })
+    });
+  },
+
   // Employés
   async getEmployees() {
     return await fetchJson(`${API_BASE}/employees`);
@@ -102,6 +110,15 @@ export const api = {
     if (params.length > 0) url += `?${params.join('&')}`;
 
     return await fetchJson(url);
+  },
+
+  // Pointages sur une plage de dates, éventuellement limités à certains matricules
+  async getPointagesRange({ date_debut, date_fin, matricules } = {}) {
+    const params = new URLSearchParams();
+    if (date_debut) params.set('date_debut', date_debut);
+    if (date_fin) params.set('date_fin', date_fin);
+    if (Array.isArray(matricules) && matricules.length > 0) params.set('matricules', matricules.join(','));
+    return await fetchJson(`${API_BASE}/pointages?${params.toString()}`);
   },
 
   async savePointages(pointagesList) {

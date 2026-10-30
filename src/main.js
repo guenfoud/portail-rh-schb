@@ -141,16 +141,32 @@ function initDarkModeToggle() {
 let notifPollIntervalId = null;
 let knownNotifIds = new Set();
 let isInitialNotifLoad = true;
+let activeNotifTab = 'all'; // 'all' | 'unread'
+
+/** Déduit une icône Lucide et un type de couleur depuis le titre/message */
+function getNotifIconType(titre, message) {
+  const txt = (titre + ' ' + message).toLowerCase();
+  if (/refusé|rejeté|annulé/.test(txt))   return { icon: 'x-circle',       type: 'danger' };
+  if (/approuvé|validé|accord/.test(txt))   return { icon: 'check-circle',   type: 'success' };
+  if (/en attente|nouvelle demande/.test(txt)) return { icon: 'clock',          type: 'warning' };
+  if (/email|expedié|envoyé/.test(txt))       return { icon: 'mail',          type: 'info' };
+  if (/habilitation|visite|santé/.test(txt)) return { icon: 'shield-check',   type: 'info' };
+  if (/bon de sortie/.test(txt))               return { icon: 'door-open',      type: 'warning' };
+  if (/attestation|document/.test(txt))        return { icon: 'file-check',     type: 'info' };
+  if (/récupération/.test(txt))               return { icon: 'calendar-days',  type: 'info' };
+  return { icon: 'bell', type: 'default' };
+}
 
 async function refreshNotifications(showToastOnNew = false) {
   const badge = document.getElementById('notif-badge');
-  const list = document.getElementById('notif-dropdown-list');
+  const list  = document.getElementById('notif-dropdown-list');
   if (!badge || !list) return;
 
   try {
     const notifs = await api.getNotifications();
     const unread = notifs.filter(n => !n.lu);
 
+    // --- Badge ---
     if (unread.length > 0) {
       badge.textContent = unread.length > 99 ? '99+' : String(unread.length);
       badge.hidden = false;
@@ -161,156 +177,237 @@ async function refreshNotifications(showToastOnNew = false) {
       badge.hidden = true;
     }
 
-    // Alerter l'utilisateur avec un toast en direct si une nouvelle notification arrive sans recharger la page
+    // --- Toast en direct + animation cloche sur nouvelle notif ---
     if (!isInitialNotifLoad && showToastOnNew) {
-      unread.forEach(n => {
-        if (!knownNotifIds.has(n.id)) {
-          const previewText = n.message.length > 80 ? `${n.message.slice(0, 80)}...` : n.message;
-          toast(`🔔 <strong>${escapeHtml(n.titre)}</strong><br><span style="font-size: 0.8rem; opacity: 0.9;">${escapeHtml(previewText)}</span>`, 'info');
+      const newOnes = unread.filter(n => !knownNotifIds.has(n.id));
+      if (newOnes.length > 0) {
+        // Animation de la cloche
+        const bellBtn = document.getElementById('notif-bell-btn');
+        if (bellBtn) {
+          bellBtn.classList.remove('ringing');
+          void bellBtn.offsetWidth;
+          bellBtn.classList.add('ringing');
+          setTimeout(() => bellBtn.classList.remove('ringing'), 800);
         }
-      });
+        // Son de notification discret
+        playNotifSound();
+        // Toast(s)
+        newOnes.forEach(n => {
+          const preview = n.message.length > 70 ? `${n.message.slice(0, 70)}…` : n.message;
+          toast(n.titre, preview, 'info', 5500);
+        });
+      }
     }
     isInitialNotifLoad = false;
     knownNotifIds = new Set(notifs.map(n => n.id));
 
-    if (notifs.length === 0) {
-      list.innerHTML = `<div class="notif-empty" style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 0.85rem;">
-        <i data-lucide="bell-off" style="width: 28px; height: 28px; opacity: 0.4; margin: 0 auto 8px auto; display: block;"></i>
-        Aucune notification pour le moment.
-      </div>`;
-      if (window.lucide) window.lucide.createIcons();
-      return;
-    }
+    // --- Rendu du dropdown ---
+    renderNotifDropdown(list, notifs, unread);
 
-    list.innerHTML = `
-      <div style="padding: 10px 14px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: var(--bg-secondary);">
-        <span style="font-size: 0.78rem; font-weight: 700; color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
-          <i data-lucide="bell" style="width: 14px; height: 14px; color: var(--color-primary);"></i>
-          ${unread.length} non lue(s) sur ${notifs.length}
-        </span>
-        ${unread.length > 0 ? `
-          <button id="btn-mark-all-notifs" style="background: none; border: none; color: var(--color-primary); font-size: 0.75rem; font-weight: 700; cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: background 0.15s;">
-            Tout marquer comme lu
-          </button>
-        ` : ''}
-      </div>
-      <div style="max-height: 380px; overflow-y: auto;">
-        ${notifs.slice(0, 25).map(item => `
-          <div class="notif-item ${item.lu ? 'read' : 'unread'}" 
-               data-id="${item.id}" 
-               data-target="${escapeHtml(item.lien || '#absences')}"
-               data-title="${escapeHtml(item.titre)}"
-               data-message="${escapeHtml(item.message)}"
-               style="padding: 12px 16px; border-bottom: 1px solid var(--border-color); cursor: pointer; transition: all 0.15s; background-color: ${item.lu ? 'transparent' : 'rgba(13, 148, 136, 0.07)'};">
-            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 4px;">
-              <span class="notif-item-title" style="font-weight: 700; font-size: 0.85rem; color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
-                ${!item.lu ? '<span style="width: 8px; height: 8px; border-radius: 50%; background-color: var(--color-primary); flex-shrink: 0; display: inline-block;"></span>' : ''}
-                ${escapeHtml(item.titre)}
-              </span>
-              <span style="font-size: 0.7rem; color: var(--text-muted); white-space: nowrap;">${formatTimeAgo(item.created_at)}</span>
-            </div>
-            <p style="margin: 0 0 6px 0; font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4;">${escapeHtml(item.message)}</p>
-            <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap;">
-              ${item.email_sent ? `
-                <div style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.72rem; color: var(--color-primary); font-weight: 600; background: rgba(13, 148, 136, 0.1); padding: 2px 7px; border-radius: 4px;">
-                  <i data-lucide="mail-check" style="width: 12px; height: 12px;"></i>
-                  ${item.email_destinataire ? escapeHtml(item.email_destinataire) : 'Email expédié'}
-                </div>
-              ` : '<span></span>'}
-              <span style="font-size: 0.72rem; color: var(--color-primary); font-weight: 600; display: inline-flex; align-items: center; gap: 3px;">
-                Ouvrir <i data-lucide="chevron-right" style="width: 12px; height: 12px;"></i>
-              </span>
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    `;
-
-    if (window.lucide) window.lucide.createIcons();
-
-    const btnMarkAll = document.getElementById('btn-mark-all-notifs');
-    if (btnMarkAll) {
-      btnMarkAll.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        await api.markAllNotificationsRead();
-        await refreshNotifications(false);
-      });
-    }
-
-    list.querySelectorAll('.notif-item').forEach(el => {
-      el.addEventListener('click', async () => {
-        const id = el.getAttribute('data-id');
-        let target = el.getAttribute('data-target') || '#absences';
-        const notifTitre = el.getAttribute('data-title') || '';
-        const notifMsg = el.getAttribute('data-message') || '';
-
-        // Détection intelligente de l'onglet précis si aucun query param n'est spécifié
-        if (target === '#absences') {
-          if (/en attente|validation|avis préalable|à approuver|nouvelle demande/i.test(notifTitre + ' ' + notifMsg)) {
-            target = '#absences?tab=attente';
-          } else if (/approuvé|favorable|refusé|rejeté|confirmation/i.test(notifTitre + ' ' + notifMsg)) {
-            target = '#absences?tab=historique';
-          }
-        } else if (target === '#recuperation') {
-          if (/en attente|validation|nouvelle demande/i.test(notifTitre + ' ' + notifMsg)) {
-            target = '#recuperation?tab=attente';
-          } else {
-            target = '#recuperation?tab=historique';
-          }
-        } else if (target === '#bonssortie' || /bon de sortie/i.test(notifTitre + ' ' + notifMsg)) {
-          if (/nouveau|en attente|sollicité/i.test(notifTitre + ' ' + notifMsg)) {
-            target = '#bonssortie?tab=attente';
-          } else {
-            target = '#bonssortie?tab=mes-bons';
-          }
-        } else if (target === '#sante' || /habilitation|visite médicale|sécurité/i.test(notifTitre + ' ' + notifMsg)) {
-          target = '#sante';
-        } else if (target === '#attestations' || /attestation|document/i.test(notifTitre + ' ' + notifMsg)) {
-          target = '#attestations';
-        }
-
-        // Marquer la notification comme lue immédiatement
-        try {
-          await api.markNotificationRead(id);
-        } catch (e) {}
-
-        // Fermer le volet déroulant
-        const notifDropdown = document.getElementById('notif-dropdown');
-        if (notifDropdown) notifDropdown.hidden = true;
-
-        // Mettre à jour le compteur badge sans délai
-        refreshNotifications(false);
-
-        // NAVIGATION GARANTIE VERS LA PAGE CONCERNÉE
-        const currentHash = window.location.hash;
-        if (currentHash === target) {
-          // Si on est DÉJÀ sur la même page/ancre, le navigateur ne déclenche pas hashchange.
-          // On force donc le routeur à ré-exécuter le rendu directement :
-          if (typeof window.navigateRouter === 'function') {
-            await window.navigateRouter();
-          } else {
-            window.dispatchEvent(new HashChangeEvent('hashchange'));
-          }
-        } else {
-          window.location.hash = target;
-        }
-
-        // Si la cible comporte un sous-onglet (?tab=...), forcer son basculement
-        const tabMatch = target.match(/tab=([a-zA-Z0-9_-]+)/);
-        if (tabMatch && tabMatch[1]) {
-          const tabName = tabMatch[1];
-          const triggerSubTab = () => {
-            const tabBtn = document.querySelector(`.sub-tab-btn[data-subview="${tabName}"]`);
-            if (tabBtn) tabBtn.click();
-          };
-          setTimeout(triggerSubTab, 80);
-          setTimeout(triggerSubTab, 300);
-        }
-      });
-    });
   } catch (e) {
     console.error('Erreur de chargement des notifications :', e);
   }
+}
+
+/** Joue un son de notification léger (ton sinusoïdal via Web Audio API) */
+function playNotifSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.4);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.4);
+  } catch (_) { /* Silencieux si API non disponible */ }
+}
+
+function renderNotifDropdown(list, notifs, unread) {
+  const displayed = activeNotifTab === 'unread' ? unread : notifs;
+
+  list.innerHTML = `
+    <!-- En-tête -->
+    <div class="notif-dropdown-header">
+      <div class="notif-dropdown-header-title">
+        <div class="notif-header-icon">
+          <i data-lucide="bell" style="width:14px;height:14px;"></i>
+        </div>
+        Notifications
+      </div>
+      <div class="notif-header-actions">
+        ${unread.length > 0 ? `
+          <button id="btn-mark-all-notifs" class="notif-header-action-btn" title="Tout marquer comme lu">
+            <i data-lucide="check-check" style="width:14px;height:14px;"></i>
+            <span>Tout lire</span>
+          </button>
+        ` : ''}
+      </div>
+    </div>
+
+    <!-- Onglets -->
+    <div class="notif-tabs">
+      <button class="notif-tab-btn ${activeNotifTab === 'all' ? 'active' : ''}" data-tab="all">
+        Toutes
+        <span class="notif-tab-count">${notifs.length}</span>
+      </button>
+      <button class="notif-tab-btn ${activeNotifTab === 'unread' ? 'active' : ''}" data-tab="unread">
+        Non lues
+        <span class="notif-tab-count">${unread.length}</span>
+      </button>
+    </div>
+
+    <!-- Corps -->
+    <div class="notif-dropdown-body">
+      ${displayed.length === 0 ? `
+        <div class="notif-empty">
+          <div class="notif-empty-icon">
+            <i data-lucide="bell-off" style="width:24px;height:24px;"></i>
+          </div>
+          <strong>${activeNotifTab === 'unread' ? 'Aucune notification non lue' : 'Aucune notification'}</strong>
+          <span style="font-size:0.78rem;">Vous êtes à jour ✔️</span>
+        </div>
+      ` : displayed.slice(0, 30).map(item => {
+        const { icon, type } = getNotifIconType(item.titre, item.message);
+        return `
+        <div class="notif-item ${item.lu ? 'read' : 'unread'}"
+             data-id="${item.id}"
+             data-target="${escapeHtml(item.lien || '#absences')}"
+             data-title="${escapeHtml(item.titre)}"
+             data-message="${escapeHtml(item.message)}">
+          <div class="notif-item-icon type-${type}">
+            <i data-lucide="${icon}" style="width:16px;height:16px;"></i>
+          </div>
+          <div class="notif-item-content">
+            <div class="notif-item-header">
+              <span class="notif-item-title">${escapeHtml(item.titre)}</span>
+              <span class="notif-item-time">${formatTimeAgo(item.created_at)}</span>
+            </div>
+            <p class="notif-item-body">${escapeHtml(item.message)}</p>
+            <div class="notif-item-footer">
+              ${item.email_sent ? `
+                <span class="notif-item-tag">
+                  <i data-lucide="mail-check" style="width:10px;height:10px;"></i>
+                  ${item.email_destinataire ? escapeHtml(item.email_destinataire) : 'Email envoyé'}
+                </span>
+              ` : '<span></span>'}
+              <span style="font-size:0.7rem;color:var(--color-primary);font-weight:700;display:flex;align-items:center;gap:2px;">
+                Ouvrir <i data-lucide="chevron-right" style="width:11px;height:11px;"></i>
+              </span>
+            </div>
+          </div>
+          ${!item.lu ? '<div class="notif-unread-dot"></div>' : ''}
+        </div>`;
+      }).join('')}
+    </div>
+
+    <!-- Pied -->
+    ${notifs.length > 0 ? `
+    <div class="notif-dropdown-footer">
+      <button class="notif-footer-link" id="btn-notif-view-all">
+        Voir toutes les notifications
+        <i data-lucide="arrow-right" style="width:13px;height:13px;"></i>
+      </button>
+    </div>` : ''}
+  `;
+
+  if (window.lucide) window.lucide.createIcons();
+
+  // --- Événements ---
+  // Onglets
+  list.querySelectorAll('.notif-tab-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      activeNotifTab = btn.getAttribute('data-tab');
+      renderNotifDropdown(list, notifs, unread);
+    });
+  });
+
+  // Tout marquer comme lu
+  const btnMarkAll = document.getElementById('btn-mark-all-notifs');
+  if (btnMarkAll) {
+    btnMarkAll.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await api.markAllNotificationsRead();
+      await refreshNotifications(false);
+    });
+  }
+
+  // Clic sur item
+  list.querySelectorAll('.notif-item').forEach(el => {
+    el.addEventListener('click', async () => {
+      const id = el.getAttribute('data-id');
+      let target = el.getAttribute('data-target') || '#absences';
+      const notifTitre = el.getAttribute('data-title') || '';
+      const notifMsg   = el.getAttribute('data-message') || '';
+
+      // Détection intelligente de l'onglet précis
+      if (target === '#absences') {
+        if (/en attente|validation|avis préalable|à approuver|nouvelle demande/i.test(notifTitre + ' ' + notifMsg)) {
+          target = '#absences?tab=attente';
+        } else if (/approuvé|favorable|refusé|rejeté|confirmation/i.test(notifTitre + ' ' + notifMsg)) {
+          target = '#absences?tab=historique';
+        }
+      } else if (target === '#recuperation') {
+        if (/en attente|validation|nouvelle demande/i.test(notifTitre + ' ' + notifMsg)) {
+          target = '#recuperation?tab=attente';
+        } else {
+          target = '#recuperation?tab=historique';
+        }
+      } else if (target === '#bonssortie' || /bon de sortie/i.test(notifTitre + ' ' + notifMsg)) {
+        if (/nouveau|en attente|sollicité/i.test(notifTitre + ' ' + notifMsg)) {
+          target = '#bonssortie?tab=attente';
+        } else {
+          target = '#bonssortie?tab=mes-bons';
+        }
+      } else if (target === '#sante' || /habilitation|visite médicale|sécurité/i.test(notifTitre + ' ' + notifMsg)) {
+        target = '#sante';
+      } else if (target === '#attestations' || /attestation|document/i.test(notifTitre + ' ' + notifMsg)) {
+        target = '#attestations';
+      }
+
+      // 1. Marquer comme lue (en arrière-plan, sans bloquer)
+      api.markNotificationRead(id).catch(() => {});
+
+      // 2. Fermer le dropdown
+      const notifDropdown = document.getElementById('notif-dropdown');
+      if (notifDropdown) notifDropdown.hidden = true;
+
+      // 3. Débloquer le verrou de rendu si actif (évite que le routeur ignore le hashchange)
+      isRenderingView = false;
+
+      // 4. Naviguer immédiatement
+      const currentHash = window.location.hash;
+      if (currentHash === target) {
+        // Même page → forcer le routeur directement
+        if (typeof window.navigateRouter === 'function') {
+          await window.navigateRouter();
+        } else {
+          window.dispatchEvent(new HashChangeEvent('hashchange'));
+        }
+      } else {
+        window.location.hash = target;
+      }
+
+      // 5. Rafraîchir le badge après navigation (sans interférer)
+      setTimeout(() => refreshNotifications(false), 500);
+
+      // 6. Déclencher le sous-onglet si nécessaire
+      const tabMatch = target.match(/tab=([a-zA-Z0-9_-]+)/);
+      if (tabMatch && tabMatch[1]) {
+        const tabName = tabMatch[1];
+        const triggerSubTab = () => {
+          const tabBtn = document.querySelector(`.sub-tab-btn[data-subview="${tabName}"]`);
+          if (tabBtn) tabBtn.click();
+        };
+        setTimeout(triggerSubTab, 200);
+        setTimeout(triggerSubTab, 600);
+      }
+    });
+  });
 }
 
 function initNotificationBell() {
@@ -357,12 +454,58 @@ function checkSession() {
   if (sessionUser && token) {
     currentUser = JSON.parse(sessionUser);
     showApp();
+    if (currentUser.must_change_password) promptPasswordChange();
   } else {
     // Session incomplète (utilisateur sans jeton ou inversement) : on repart de zéro
     sessionStorage.removeItem('gica_hr_user');
     clearToken();
     showLogin();
   }
+}
+
+// Changement de mot de passe obligatoire (compte créé/réinitialisé par la DRH)
+function promptPasswordChange() {
+  const bodyHtml = `
+    <div style="background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f59e0b; border-radius: 6px; padding: 12px 14px; font-size: 0.85rem; color: #92400e; margin-bottom: 18px;">
+      Votre compte utilise un mot de passe temporaire. Choisissez un nouveau mot de passe personnel
+      (8 caractères minimum) pour sécuriser votre accès.
+    </div>
+    <div class="form-group">
+      <label for="pwd-current">Mot de passe actuel</label>
+      <input type="password" id="pwd-current" class="form-control" autocomplete="current-password">
+    </div>
+    <div class="form-group">
+      <label for="pwd-new">Nouveau mot de passe</label>
+      <input type="password" id="pwd-new" class="form-control" autocomplete="new-password" minlength="8">
+    </div>
+    <div class="form-group">
+      <label for="pwd-confirm">Confirmer le nouveau mot de passe</label>
+      <input type="password" id="pwd-confirm" class="form-control" autocomplete="new-password" minlength="8">
+    </div>
+  `;
+
+  openModal('Changement de mot de passe obligatoire', bodyHtml, [{
+    label: 'Enregistrer et continuer',
+    class: 'btn btn-primary',
+    onClick: async () => {
+      const current = document.getElementById('pwd-current')?.value || '';
+      const next = document.getElementById('pwd-new')?.value || '';
+      const confirmation = document.getElementById('pwd-confirm')?.value || '';
+
+      if (next.length < 8) return toast('Le nouveau mot de passe doit contenir au moins 8 caractères.', 'warning');
+      if (next !== confirmation) return toast('Les deux saisies ne correspondent pas.', 'warning');
+
+      try {
+        await api.changePassword(current, next);
+        currentUser.must_change_password = false;
+        sessionStorage.setItem('gica_hr_user', JSON.stringify(currentUser));
+        closeModal();
+        toast('Mot de passe mis à jour.', 'success');
+      } catch (err) {
+        toast(err.message, 'danger');
+      }
+    }
+  }]);
 }
 
 // Afficher l'application principale
@@ -445,6 +588,7 @@ function showLogin() {
         sessionStorage.setItem('gica_hr_user', JSON.stringify(userData));
         currentUser = userData;
         showApp();
+        if (userData.must_change_password) promptPasswordChange();
       } catch (err) {
         errorDiv.innerText = err.message || "Erreur de connexion.";
         errorDiv.style.display = 'block';
@@ -758,9 +902,9 @@ export function confirmDialog(message, { title = 'Confirmation requise', danger 
   });
 }
 
-// --- NOTIFICATIONS TOAST ANIMÉES ---
-// Remplace la plupart des window.alert() par de petites notifications non bloquantes,
-// empilées en bas à droite, qui apparaissent/disparaissent avec une animation.
+// --- NOTIFICATIONS TOAST AMÉLIORÉES ---
+// Toasts premium : icône dans rond coloré, titre + message, barre de progression,
+// bouton d'action optionnel, son, slide-out fluide.
 let toastContainer = null;
 
 function getToastContainer() {
@@ -772,39 +916,73 @@ function getToastContainer() {
 
 const TOAST_ICONS = {
   success: 'check-circle',
-  danger: 'x-circle',
+  danger:  'x-circle',
   warning: 'alert-triangle',
-  info: 'info'
+  info:    'bell'
 };
 
-export function toast(message, type = 'success', duration = 4000) {
+/**
+ * Affiche un toast premium.
+ * @param {string} title      - Titre (gras)
+ * @param {string} message    - Message secondaire (optionnel)
+ * @param {string} type       - 'success' | 'danger' | 'warning' | 'info'
+ * @param {number} duration   - Durée en ms (0 = persistant)
+ * @param {Object} [action]   - { label: string, onClick: Function } (optionnel)
+ */
+export function toast(title, message = '', type = 'success', duration = 4500, action = null) {
+  // Rétrocompatibilité : ancien appel toast(message, type, duration)
+  // → si le 2ème arg est un type connu, on réorganise les arguments
+  const knownTypes = new Set(['success', 'danger', 'warning', 'info', 'error']);
+  if (knownTypes.has(message)) {
+    // toast(msg, type, duration?) — ancien format
+    if (typeof type === 'number') duration = type;
+    else if (typeof type !== 'number') duration = 4500;
+    type = message;
+    message = '';
+  }
+  // Normaliser 'error' → 'danger'
+  if (type === 'error') type = 'danger';
+
   const container = getToastContainer();
   if (!container) {
-    // Repli si le conteneur n'existe pas encore dans le DOM
-    if (type === 'danger') alert(message);
+    if (type === 'danger') alert(title + (message ? '\n' + message : ''));
     return;
   }
 
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
   el.innerHTML = `
-    <i data-lucide="${TOAST_ICONS[type] || 'info'}"></i>
-    <span class="toast-message"></span>
+    <div class="toast-icon-wrap">
+      <i data-lucide="${TOAST_ICONS[type] || 'info'}"></i>
+    </div>
+    <div class="toast-body">
+      <div class="toast-title">${escapeHtml(title)}</div>
+      ${message ? `<div class="toast-message">${escapeHtml(message)}</div>` : ''}
+      ${action ? `<button class="toast-action-btn" style="color:var(--color-${type === 'info' ? 'primary' : type})">${escapeHtml(action.label)}</button>` : ''}
+    </div>
     <button class="toast-close" aria-label="Fermer">&times;</button>
+    ${duration > 0 ? `<div class="toast-progress" style="animation-duration:${duration}ms;"></div>` : ''}
   `;
-  el.querySelector('.toast-message').innerText = message;
 
   const remove = () => {
-    el.remove();
+    if (el.parentNode) {
+      el.classList.add('toast-out');
+      setTimeout(() => el.remove(), 300);
+    }
   };
 
   el.querySelector('.toast-close').addEventListener('click', remove);
+  if (action) {
+    el.querySelector('.toast-action-btn').addEventListener('click', () => {
+      action.onClick();
+      remove();
+    });
+  }
+
   container.appendChild(el);
   if (window.lucide) window.lucide.createIcons();
 
-  if (duration > 0) {
-    setTimeout(remove, duration);
-  }
+  if (duration > 0) setTimeout(remove, duration);
 }
 
 // Initialiser le commutateur de langue

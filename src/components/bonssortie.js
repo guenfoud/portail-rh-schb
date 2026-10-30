@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { openModal, closeModal, getCurrentUser, toast, confirmDialog } from '../main.js';
 import { escapeHtml, formatDateFR } from '../utils.js';
+import { renderOfficialHeader, renderOfficialFooter, renderOfficialSeal, wrapInOfficialDocument, printOfficialDocument } from './letterhead.js';
 
 let currentTab = 'mes-bons'; // 'mes-bons' | 'attente' | 'poste-garde' | 'historique'
 let bonsData = [];
@@ -593,84 +594,71 @@ export const BonsSortieComponent = {
   },
 
   openPrintModal(bon) {
-    const printHtml = `
-      <div id="printable-bon-doc" style="background: white; color: #1e293b; padding: 24px; font-family: 'Inter', Arial, sans-serif; border: 2px solid #0f172a; border-radius: 4px; max-width: 650px; margin: 0 auto;">
-        
-        <!-- En-tête officiel SCHB GICA -->
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0f172a; padding-bottom: 14px; margin-bottom: 16px;">
-          <div>
-            <div style="font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: #475569;">République Algérienne Démocratique et Populaire</div>
-            <div style="font-size: 0.85rem; font-weight: 800; color: #1e293b;">GROUPE INDUSTRIEL DES CIMENTS D'ALGÉRIE (GICA)</div>
-            <div style="font-size: 1rem; font-weight: 900; color: #13547a;">SOCIÉTÉ DES CIMENTS DE HAMMA BOUZIANE — SCHB</div>
-          </div>
-          <div style="text-align: right;">
-            <div style="border: 2px solid #13547a; padding: 6px 12px; border-radius: 4px; font-weight: 800; color: #13547a; font-size: 0.95rem;">
-              BON N° ${escapeHtml(bon.id.slice(-8).toUpperCase())}
-            </div>
-            <div style="font-size: 0.75rem; color: #64748b; margin-top: 4px;">Émis le : ${formatDateFR(bon.date_sortie)}</div>
+    const refDoc = `SCHB/BS-${bon.id.slice(-8).toUpperCase()}`;
+    const dateDoc = formatDateFR(bon.date_sortie);
+
+    const bonBodyHtml = `
+      <!-- Titre du Document -->
+      <div style="text-align: center; margin: 18px 0 22px 0;">
+        <h2 style="margin: 0; font-size: 1.45rem; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; color: #1F497D; text-decoration: underline;">
+          AUTORISATION DE SORTIE / ORDRE DE MISSION
+        </h2>
+        <div style="font-size: 8.5pt; color: #64748b; font-weight: 600; margin-top: 4px;">
+          (Valable pour la journée du ${dateDoc})
+        </div>
+      </div>
+
+      <!-- Informations Salarié -->
+      <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; font-size: 9pt; font-family: Calibri, Arial, sans-serif;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <div><strong>Nom & Prénom :</strong> ${escapeHtml(bon.nom || '')} ${escapeHtml(bon.prenom || '')}</div>
+          <div><strong>Matricule :</strong> #${escapeHtml(bon.matricule)}</div>
+          <div><strong>Département :</strong> ${escapeHtml(bon.departement || '-')}</div>
+          <div><strong>Fonction / Poste :</strong> ${escapeHtml(bon.poste || '-')}</div>
+        </div>
+      </div>
+
+      <!-- Détails de la Sortie -->
+      <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; font-size: 9pt; font-family: Calibri, Arial, sans-serif;">
+        <div style="margin-bottom: 8px;"><strong>Nature de la Sortie :</strong> <span style="background: #e2e8f0; padding: 2px 8px; border-radius: 4px; font-weight: 700; color: #1F497D;">${escapeHtml(bon.type_sortie)}</span></div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+          <div><strong>Heure de Départ :</strong> ${escapeHtml(bon.heure_depart)}</div>
+          <div><strong>Heure de Retour Prévue :</strong> ${escapeHtml(bon.heure_retour_prevue)}</div>
+        </div>
+        <div style="margin-bottom: 8px;"><strong>Durée Autorisée :</strong> ${bon.duree_heures} heure(s)</div>
+        ${bon.destination ? `<div style="margin-bottom: 8px;"><strong>Destination / Lieu de Mission :</strong> ${escapeHtml(bon.destination)}</div>` : ''}
+        <div><strong>Motif :</strong> ${escapeHtml(bon.motif || 'Non précisé')}</div>
+      </div>
+
+      <!-- Signatures & Visas réglementaires -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 20px; font-size: 8pt; text-align: center; font-family: Calibri, Arial, sans-serif;">
+        <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 8px; height: 95px; display: flex; flex-direction: column; justify-content: space-between;">
+          <div style="font-weight: 700;">Signature de l'Agent</div>
+          <div style="font-size: 7pt; color: #64748b;">(Lu et approuvé)</div>
+        </div>
+
+        <div style="border: 1.5px solid #1F497D; background: rgba(31,73,125,0.02); border-radius: 4px; padding: 8px; height: 95px; display: flex; flex-direction: column; justify-content: space-between;">
+          <div style="font-weight: 700; color: #1F497D;">Visa Chef de Service / DRH</div>
+          <div style="font-weight: 800; color: #16a34a; font-size: 7.5pt;">
+            ${bon.statut === 'Validé' || bon.statut === 'Clôturé' ? `[VALIDÉ par ${escapeHtml(bon.valide_par && !bon.valide_par.includes('undefined') ? bon.valide_par : 'Direction RH')}]` : '<span style="color:#f59e0b;">[EN ATTENTE DE VISA]</span>'}
           </div>
         </div>
 
-        <!-- Titre du Document -->
-        <div style="text-align: center; margin-bottom: 20px;">
-          <h2 style="margin: 0; font-size: 1.35rem; font-weight: 900; letter-spacing: 0.5px; text-transform: uppercase; color: #0f172a;">
-            AUTORISATION DE SORTIE / ORDRE DE MISSION
-          </h2>
-          <div style="font-size: 0.85rem; color: #64748b; font-weight: 600;">(Valable pour la journée du ${formatDateFR(bon.date_sortie)})</div>
-        </div>
-
-        <!-- Informations Salarié -->
-        <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 14px; margin-bottom: 16px; font-size: 0.9rem;">
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-            <div><strong>Nom & Prénom :</strong> ${escapeHtml(bon.nom || '')} ${escapeHtml(bon.prenom || '')}</div>
-            <div><strong>Matricule :</strong> #${escapeHtml(bon.matricule)}</div>
-            <div><strong>Département :</strong> ${escapeHtml(bon.departement || '-')}</div>
-            <div><strong>Fonction / Poste :</strong> ${escapeHtml(bon.poste || '-')}</div>
-          </div>
-        </div>
-
-        <!-- Détails de la Sortie -->
-        <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 14px; margin-bottom: 18px; font-size: 0.9rem;">
-          <div style="margin-bottom: 8px;"><strong>Nature de la Sortie :</strong> <span style="background: #e2e8f0; padding: 2px 8px; border-radius: 4px; font-weight: 700;">${escapeHtml(bon.type_sortie)}</span></div>
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px;">
-            <div><strong>Heure de Départ :</strong> ${escapeHtml(bon.heure_depart)}</div>
-            <div><strong>Heure de Retour Prévue :</strong> ${escapeHtml(bon.heure_retour_prevue)}</div>
-          </div>
-          <div style="margin-bottom: 8px;"><strong>Durée Prévue :</strong> ${bon.duree_heures} heure(s)</div>
-          ${bon.destination ? `<div style="margin-bottom: 8px;"><strong>Destination :</strong> ${escapeHtml(bon.destination)}</div>` : ''}
-          <div><strong>Motif :</strong> ${escapeHtml(bon.motif || 'Non précisé')}</div>
-        </div>
-
-        <!-- Signatures & Visas -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-top: 24px; font-size: 0.8rem; text-align: center;">
-          <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 10px; height: 90px; display: flex; flex-direction: column; justify-content: space-between;">
-            <div style="font-weight: 700;">Signature de l'Agent</div>
-            <div style="font-size: 0.72rem; color: #64748b;">(Lu et approuvé)</div>
-          </div>
-
-          <div style="border: 1px solid #13547a; background: rgba(19,84,122,0.03); border-radius: 4px; padding: 10px; height: 90px; display: flex; flex-direction: column; justify-content: space-between;">
-            <div style="font-weight: 700; color: #13547a;">Visa Chef de Service / DRH</div>
-            <div style="font-weight: 800; color: #16a34a; font-size: 0.75rem;">
-              ${bon.statut === 'Validé' || bon.statut === 'Clôturé' ? `[VALIDÉ par ${escapeHtml(bon.valide_par && !bon.valide_par.includes('undefined') ? bon.valide_par : 'Direction RH')}]` : '<span style="color:#f59e0b;">[EN ATTENTE DE VISA]</span>'}
-            </div>
-          </div>
-
-          <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 10px; height: 90px; display: flex; flex-direction: column; justify-content: space-between;">
-            <div style="font-weight: 700;">Visa Poste de Garde</div>
-            <div style="font-size: 0.72rem; color: #64748b;">Départ: __h__ / Retour: __h__</div>
-          </div>
-        </div>
-
-        <!-- QR Code Officiel Sécurité -->
-        <div style="margin-top: 18px; border-top: 1px solid #cbd5e1; padding-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 0.72rem; color: #64748b;">
-          <div>Authentification Système RH SCHB GICA • Document généré numériquement</div>
-          <div style="font-family: monospace; font-weight: 700; color: #0f172a;">REF: ${escapeHtml(bon.id)}</div>
+        <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 8px; height: 95px; display: flex; flex-direction: column; justify-content: space-between;">
+          <div style="font-weight: 700;">Visa Poste de Garde</div>
+          <div style="font-size: 7pt; color: #64748b;">Départ: __h__ / Retour: __h__</div>
         </div>
       </div>
     `;
 
+    const printHtml = wrapInOfficialDocument(bonBodyHtml, {
+      ref: refDoc,
+      date: dateDoc,
+      departement: 'SERVICE SÉCURITÉ & ADMINISTRATION RH'
+    });
+
     openModal(
-      'Reçu Officiel — Bon de Sortie Autorisée',
+      `Reçu Officiel — Bon de Sortie (${refDoc})`,
       printHtml,
       [
         {
@@ -682,23 +670,12 @@ export const BonsSortieComponent = {
           label: 'Imprimer le Bon',
           class: 'btn btn-primary',
           onClick: () => {
-            const printContent = document.getElementById('printable-bon-doc').outerHTML;
-            const win = window.open('', '_blank');
-            win.document.write(`
-              <html>
-                <head>
-                  <title>Bon de Sortie — SCHB GICA</title>
-                  <style>
-                    body { margin: 20px; font-family: Arial, sans-serif; }
-                    @media print { body { margin: 0; } }
-                  </style>
-                </head>
-                <body onload="window.print(); window.close();">
-                  ${printContent}
-                </body>
-              </html>
-            `);
-            win.document.close();
+            printOfficialDocument(bonBodyHtml, {
+              documentTitle: `Bon_Sortie_${bon.matricule}_${bon.id.slice(-8)}`,
+              ref: refDoc,
+              date: dateDoc,
+              departement: 'SERVICE SÉCURITÉ & ADMINISTRATION RH'
+            });
           }
         }
       ]

@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { openModal, closeModal, renderTimePicker, getTimePickerValue, toast, confirmDialog } from '../main.js';
 import { escapeHtml, formatDateFR, exportToExcel } from '../utils.js';
+import { renderOfficialHeader, renderOfficialFooter, renderOfficialSeal, wrapInOfficialDocument, printOfficialDocument, LETTERHEAD_ASSETS } from './letterhead.js';
 
 function formatTime24h(rawTime) {
   if (!rawTime) return '';
@@ -40,7 +41,7 @@ function formatTime24h(rawTime) {
 
 export const PointageComponent = {
   title: 'Gestion des Pointages',
-  subtitle: 'Importation des données de pointeuse et journal de présence',
+  subtitle: 'Saisie manuelle, saisie groupée multi-employés, import pointeuse et journal de présence',
   importedData: [],
 
   async render() {
@@ -85,9 +86,9 @@ export const PointageComponent = {
                 <i data-lucide="plus"></i>
                 Saisie Manuelle
               </button>
-              <button class="btn btn-secondary" id="btn-add-pointage-weekly" style="display: flex; align-items: center; gap: 6px;">
-                <i data-lucide="calendar"></i>
-                Saisie Hebdomadaire
+              <button class="btn btn-secondary" id="btn-add-pointage-bulk" style="display: flex; align-items: center; gap: 6px;">
+                <i data-lucide="users"></i>
+                Saisie Groupée
               </button>
               <button class="btn btn-secondary" id="btn-export-journal" style="display: flex; align-items: center; gap: 6px;">
                 <i data-lucide="file-spreadsheet"></i>
@@ -325,7 +326,7 @@ export const PointageComponent = {
     const searchInput = document.getElementById('journal-search');
     const dateFilter = document.getElementById('journal-date-filter');
     const btnManualAdd = document.getElementById('btn-add-pointage-manual');
-    const btnWeeklyAdd = document.getElementById('btn-add-pointage-weekly');
+    const btnBulkAdd = document.getElementById('btn-add-pointage-bulk');
 
     const btnJournalToday = document.getElementById('btn-journal-today');
     const btnJournalAll = document.getElementById('btn-journal-all');
@@ -347,7 +348,7 @@ export const PointageComponent = {
       });
     }
     if (btnManualAdd) btnManualAdd.addEventListener('click', () => this.showPointageFormModal());
-    if (btnWeeklyAdd) btnWeeklyAdd.addEventListener('click', () => this.showWeeklyPointageFormModal());
+    if (btnBulkAdd) btnBulkAdd.addEventListener('click', () => this.showBulkPointageFormModal());
 
     await this.refreshJournalList();
 
@@ -724,108 +725,387 @@ export const PointageComponent = {
     }
   },
 
-  async showWeeklyPointageFormModal() {
+  formatISODate(dateObj) {
+    return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+  },
+
+  // Saisie groupée : plusieurs employés à la fois, soit sur une journée (grille),
+  // soit sur un mois complet (jours de semaine choisis).
+  async showBulkPointageFormModal() {
     let employees = [];
     try {
       employees = await api.getEmployees();
     } catch (err) {
       console.error(err);
+      toast("Impossible de charger la liste des employés.", 'danger');
+      return;
+    }
+    if (!Array.isArray(employees) || employees.length === 0) {
+      toast("Aucun employé disponible pour la saisie.", 'warning');
+      return;
     }
 
-    const today = new Date();
-    const currentMonth = today.getMonth() + 1;
-    const currentYear = today.getFullYear();
-
-    const title = "Saisie mensuelle automatique (Dimanche à Jeudi)";
+    const departments = [...new Set(employees.map(e => e.departement).filter(Boolean))].sort();
+    const now = new Date();
+    const monthValue = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const todayValue = this.formatISODate(now);
+    const weekdayLabels = [
+      { v: 0, n: 'Dim' }, { v: 1, n: 'Lun' }, { v: 2, n: 'Mar' }, { v: 3, n: 'Mer' },
+      { v: 4, n: 'Jeu' }, { v: 5, n: 'Ven' }, { v: 6, n: 'Sam' }
+    ];
 
     const bodyHtml = `
-      <form id="weekly-pointage-form" style="display: flex; flex-direction: column; gap: 16px;">
-        <div class="form-group" style="position: relative;">
-          <label for="pw-search-emp">Rechercher un Employé*</label>
-          <input type="text" id="pw-search-emp" class="form-control" placeholder="Taper le nom, prénom ou matricule (ex: 130031)..." autocomplete="off" required>
-          <input type="hidden" id="pw-matricule" required>
-          <div id="pw-suggestions" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-secondary); border: 1px solid var(--border-color); max-height: 180px; overflow-y: auto; z-index: 999; border-radius: var(--radius-md); box-shadow: var(--shadow-lg); margin-top: 4px;"></div>
+      <div style="display: flex; flex-direction: column; gap: 16px;">
+        <div style="display: flex; gap: 8px; background: var(--bg-primary); padding: 6px; border-radius: 10px; border: 1px solid var(--border-color);">
+          <button type="button" id="bulk-mode-month" class="btn btn-primary btn-sm" style="flex: 1;">Mois complet</button>
+          <button type="button" id="bulk-mode-day" class="btn btn-secondary btn-sm" style="flex: 1;">Une journée (grille)</button>
         </div>
 
-        <div class="form-row">
-          <div class="form-group">
-            <label for="pw-month">Mois*</label>
-            <select id="pw-month" class="form-control" required>
-              ${[
-                {v: 1, n: 'Janvier'}, {v: 2, n: 'Février'}, {v: 3, n: 'Mars'},
-                {v: 4, n: 'Avril'}, {v: 5, n: 'Mai'}, {v: 6, n: 'Juin'},
-                {v: 7, n: 'Juillet'}, {v: 8, n: 'Août'}, {v: 9, n: 'Septembre'},
-                {v: 10, n: 'Octobre'}, {v: 11, n: 'Novembre'}, {v: 12, n: 'Décembre'}
-              ].map(m => `<option value="${m.v}" ${m.v === currentMonth ? 'selected' : ''}>${m.n}</option>`).join('')}
+        <div class="form-group" style="margin-bottom: 0;">
+          <label style="font-weight: 700; display: block; margin-bottom: 8px;">1. Employés concernés *</label>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+            <input type="text" id="bulk-emp-search" class="form-control" autocomplete="off"
+                   placeholder="Rechercher : nom, prénom, matricule, poste..." style="flex: 1; min-width: 200px;">
+            <select id="bulk-emp-dept" class="form-control" style="width: 200px;">
+              <option value="">Tous les départements</option>
+              ${departments.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('')}
             </select>
           </div>
-          <div class="form-group">
-            <label for="pw-year">Année*</label>
-            <select id="pw-year" class="form-control" required>
-              ${[2024, 2025, 2026, 2027, 2028].map(y => `<option value="${y}" ${y === currentYear ? 'selected' : ''}>${y}</option>`).join('')}
-            </select>
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px;">
+            <button type="button" id="bulk-select-all" class="btn btn-secondary btn-sm">Tout sélectionner</button>
+            <button type="button" id="bulk-select-none" class="btn btn-secondary btn-sm">Tout désélectionner</button>
+            <span id="bulk-emp-count" class="badge secondary">0 employé sélectionné</span>
+          </div>
+          <div id="bulk-emp-list" style="max-height: 230px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary);">
+            ${employees.map(e => `
+              <label class="bulk-emp-row"
+                     data-search="${escapeHtml(`${e.matricule} ${e.nom || ''} ${e.prenom || ''} ${e.poste || ''}`.toLowerCase())}"
+                     data-dept="${escapeHtml(e.departement || '')}"
+                     style="display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border-color); cursor: pointer; font-size: 0.86rem;">
+                <input type="checkbox" class="bulk-emp-checkbox" value="${escapeHtml(e.matricule)}"
+                       data-entree="${escapeHtml((e.horaire_debut || '08:00').slice(0, 5))}"
+                       data-sortie="${escapeHtml((e.horaire_fin || '16:00').slice(0, 5))}"
+                       data-name="${escapeHtml(`${e.prenom || ''} ${e.nom || ''}`.trim())}"
+                       style="width: 16px; height: 16px; accent-color: var(--color-primary); flex: 0 0 auto;">
+                <span style="display: flex; flex-direction: column; min-width: 0;">
+                  <strong style="font-size: 0.85rem;">${escapeHtml((e.nom || '').toUpperCase())} ${escapeHtml(e.prenom || '')}</strong>
+                  <span style="font-size: 0.75rem; color: var(--text-muted);">#${escapeHtml(e.matricule)} · ${escapeHtml(e.departement || '-')} · ${escapeHtml(e.poste || '-')}</span>
+                </span>
+                <span style="margin-left: auto; font-size: 0.75rem; color: var(--text-secondary); font-family: monospace; white-space: nowrap;">
+                  ${escapeHtml((e.horaire_debut || '08:00').slice(0, 5))}–${escapeHtml((e.horaire_fin || '16:00').slice(0, 5))}
+                </span>
+              </label>
+            `).join('')}
           </div>
         </div>
 
-        <div class="form-row">
+        <div id="bulk-month-fields" style="display: flex; flex-direction: column; gap: 14px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label style="font-weight: 700; display: block; margin-bottom: 8px;">2. Mois et jours travaillés *</label>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+              <input type="month" id="bulk-month" class="form-control" value="${monthValue}" style="width: 200px;">
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                ${weekdayLabels.map(w => `
+                  <label class="bulk-weekday" style="display: flex; align-items: center; gap: 5px; padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.8rem; cursor: pointer;">
+                    <input type="checkbox" value="${w.v}" ${w.v <= 4 ? 'checked' : ''} style="accent-color: var(--color-primary);"> ${w.n}
+                  </label>
+                `).join('')}
+              </div>
+            </div>
+            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Par défaut dimanche → jeudi (week-end vendredi / samedi).</div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="bulk-month-entree">Heure d'entrée (optionnel)</label>
+              <input type="time" id="bulk-month-entree" class="form-control">
+            </div>
+            <div class="form-group">
+              <label for="bulk-month-sortie">Heure de sortie (optionnel)</label>
+              <input type="time" id="bulk-month-sortie" class="form-control">
+            </div>
+          </div>
+          <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: -8px;">
+            Laissé vide → l'horaire propre de chaque employé est utilisé.
+          </div>
+
           <div class="form-group">
-            <label for="pw-notes">Notes / Motif</label>
-            <input type="text" id="pw-notes" class="form-control" placeholder="ex: Enregistrement standard" value="Enregistrement">
+            <label for="bulk-month-notes">Notes</label>
+            <input type="text" id="bulk-month-notes" class="form-control" value="Enregistrement" placeholder="ex: Enregistrement standard">
+          </div>
+
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85rem;">
+            <input type="checkbox" id="bulk-skip-existing" checked style="width: 16px; height: 16px; accent-color: var(--color-primary);">
+            Ne pas écraser les pointages déjà saisis
+          </label>
+
+          <div id="bulk-preview" style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 0.83rem; color: var(--text-secondary);">
+            Sélectionnez au moins un employé.
           </div>
         </div>
 
-        <div class="form-row">
-          <div class="form-group">
-            <label>Heure d'entrée standard</label>
-            ${renderTimePicker('pw-entree', '08:00')}
+        <div id="bulk-day-fields" style="display: none; flex-direction: column; gap: 14px;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label style="font-weight: 700; display: block; margin-bottom: 8px;">2. Journée à saisir *</label>
+            <input type="date" id="bulk-day-date" class="form-control" value="${todayValue}" style="width: 200px;">
           </div>
-          <div class="form-group">
-            <label>Heure de sortie standard</label>
-            ${renderTimePicker('pw-sortie', '16:00')}
+
+          <div style="display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap;">
+            <div class="form-group" style="margin: 0; width: 140px;">
+              <label style="font-size: 0.78rem;">Entrée</label>
+              <input type="time" id="bulk-day-entree-all" class="form-control" value="08:00">
+            </div>
+            <div class="form-group" style="margin: 0; width: 140px;">
+              <label style="font-size: 0.78rem;">Sortie</label>
+              <input type="time" id="bulk-day-sortie-all" class="form-control" value="16:00">
+            </div>
+            <button type="button" id="bulk-day-apply-all" class="btn btn-secondary btn-sm" style="height: 38px;">Appliquer à tous</button>
+          </div>
+
+          <div style="max-height: 260px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 8px;">
+            <table class="custom-table" style="margin: 0;">
+              <thead>
+                <tr>
+                  <th>Employé</th>
+                  <th style="width: 130px;">Entrée</th>
+                  <th style="width: 130px;">Sortie</th>
+                </tr>
+              </thead>
+              <tbody id="bulk-day-grid">
+                <tr><td colspan="3" style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 0.85rem;">Sélectionnez des employés pour préparer la grille.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="bulk-day-preview" style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; font-size: 0.83rem; color: var(--text-secondary);">
+            0 pointage prêt.
           </div>
         </div>
-      </form>
+      </div>
     `;
 
-    openModal(title, bodyHtml, async () => {
-      const form = document.getElementById('weekly-pointage-form');
-      if (!form.checkValidity()) {
-        form.reportValidity();
+    let mode = 'month';
+
+    const getCheckedEmployees = () => Array.from(document.querySelectorAll('#bulk-emp-list .bulk-emp-checkbox:checked')).map(cb => ({
+      matricule: cb.value,
+      entree: cb.getAttribute('data-entree') || '08:00',
+      sortie: cb.getAttribute('data-sortie') || '16:00',
+      name: cb.getAttribute('data-name') || cb.value
+    }));
+
+    const getSelectedWeekdays = () => Array.from(document.querySelectorAll('.bulk-weekday input:checked'))
+      .map(cb => parseInt(cb.value, 10));
+
+    const countSelectedDays = (year, month) => {
+      const weekdays = new Set(getSelectedWeekdays());
+      const total = new Date(year, month, 0).getDate();
+      let count = 0;
+      for (let d = 1; d <= total; d++) {
+        if (weekdays.has(new Date(year, month - 1, d).getDay())) count++;
+      }
+      return count;
+    };
+
+    const syncDayGrid = () => {
+      const grid = document.getElementById('bulk-day-grid');
+      if (!grid) return;
+      const checked = getCheckedEmployees();
+      const checkedIds = new Set(checked.map(c => c.matricule));
+
+      Array.from(grid.querySelectorAll('tr[data-matricule]')).forEach(row => {
+        if (!checkedIds.has(row.getAttribute('data-matricule'))) row.remove();
+      });
+
+      const presentIds = new Set(Array.from(grid.querySelectorAll('tr[data-matricule]'))
+        .map(row => row.getAttribute('data-matricule')));
+
+      checked.forEach(emp => {
+        if (presentIds.has(emp.matricule)) return;
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-matricule', emp.matricule);
+        tr.innerHTML = `
+          <td style="font-size: 0.83rem;">
+            <div style="font-weight: 600;">${escapeHtml(emp.name)}</div>
+            <div style="font-size: 0.72rem; color: var(--text-muted);">#${escapeHtml(emp.matricule)}</div>
+          </td>
+          <td><input type="time" class="form-control bulk-row-entree" style="height: 34px; padding: 2px 8px;" value="${escapeHtml(emp.entree)}"></td>
+          <td><input type="time" class="form-control bulk-row-sortie" style="height: 34px; padding: 2px 8px;" value="${escapeHtml(emp.sortie)}"></td>
+        `;
+        grid.appendChild(tr);
+      });
+
+      const emptyRow = grid.querySelector('td[colspan="3"]');
+      if (emptyRow && checked.length > 0) emptyRow.closest('tr').remove();
+      if (checked.length === 0) {
+        grid.innerHTML = `<tr><td colspan="3" style="text-align: center; padding: 16px; color: var(--text-muted); font-size: 0.85rem;">Sélectionnez des employés pour préparer la grille.</td></tr>`;
+      }
+    };
+
+    const updatePreview = () => {
+      const checked = getCheckedEmployees();
+
+      if (mode === 'month') {
+        const preview = document.getElementById('bulk-preview');
+        if (!preview) return;
+        if (!checked.length) {
+          preview.textContent = 'Sélectionnez au moins un employé.';
+          return;
+        }
+        const monthVal = document.getElementById('bulk-month')?.value;
+        if (!monthVal) {
+          preview.textContent = 'Choisissez un mois.';
+          return;
+        }
+        const [year, month] = monthVal.split('-').map(Number);
+        const days = countSelectedDays(year, month);
+        preview.innerHTML = `<strong>${checked.length}</strong> employé(s) × <strong>${days}</strong> jour(s) = <strong>${checked.length * days}</strong> pointage(s) à préparer.`;
+      } else {
+        const dayPreview = document.getElementById('bulk-day-preview');
+        if (!dayPreview) return;
+        const rows = Array.from(document.querySelectorAll('#bulk-day-grid tr[data-matricule]'));
+        const ready = rows.filter(row => {
+          const entree = row.querySelector('.bulk-row-entree')?.value;
+          const sortie = row.querySelector('.bulk-row-sortie')?.value;
+          return entree && sortie;
+        }).length;
+        const dateLabel = formatDateFR(document.getElementById('bulk-day-date')?.value || '');
+        dayPreview.innerHTML = `<strong>${ready}</strong> pointage(s) prêt(s)${dateLabel ? ` pour le ${dateLabel}` : ''}.`;
+      }
+    };
+
+    const refreshCount = () => {
+      const countEl = document.getElementById('bulk-emp-count');
+      if (!countEl) return;
+      const n = getCheckedEmployees().length;
+      countEl.textContent = `${n} employé${n > 1 ? 's' : ''} sélectionné${n > 1 ? 's' : ''}`;
+    };
+
+    const refreshAll = () => {
+      refreshCount();
+      syncDayGrid();
+      updatePreview();
+    };
+
+    openModal('Saisie Groupée de Pointages', bodyHtml, async () => {
+      const checked = getCheckedEmployees();
+      if (checked.length === 0) {
+        toast("Sélectionnez au moins un employé.", 'warning');
         return false;
       }
 
-      const matricule = document.getElementById('pw-matricule').value;
-      const month = parseInt(document.getElementById('pw-month').value);
-      const year = parseInt(document.getElementById('pw-year').value);
-      const heureEntree = getTimePickerValue('pw-entree') || null;
-      const heureSortie = getTimePickerValue('pw-sortie') || null;
-      const notes = document.getElementById('pw-notes').value.trim() || 'Enregistrement';
-
       const list = [];
-      const numDays = new Date(year, month, 0).getDate(); // Nombre de jours dans le mois
+      let summary = '';
 
-      for (let d = 1; d <= numDays; d++) {
-        const dateObj = new Date(year, month - 1, d);
-        const dayOfWeek = dateObj.getDay(); // 0 = Dimanche, 1 = Lundi, ..., 4 = Jeudi
+      if (mode === 'month') {
+        const monthVal = document.getElementById('bulk-month')?.value;
+        if (!monthVal) {
+          toast("Choisissez un mois.", 'warning');
+          return false;
+        }
+        const [year, month] = monthVal.split('-').map(Number);
+        const weekdays = new Set(getSelectedWeekdays());
+        if (weekdays.size === 0) {
+          toast("Sélectionnez au moins un jour de la semaine.", 'warning');
+          return false;
+        }
 
-        // Si le jour est un Dimanche, Lundi, Mardi, Mercredi ou Jeudi
-        if (dayOfWeek >= 0 && dayOfWeek <= 4) {
-          const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const globalEntree = document.getElementById('bulk-month-entree')?.value || null;
+        const globalSortie = document.getElementById('bulk-month-sortie')?.value || null;
+        const notes = document.getElementById('bulk-month-notes')?.value.trim() || 'Enregistrement';
+        const skipExisting = document.getElementById('bulk-skip-existing')?.checked;
+
+        const numDays = new Date(year, month, 0).getDate();
+        const dates = [];
+        for (let d = 1; d <= numDays; d++) {
+          if (!weekdays.has(new Date(year, month - 1, d).getDay())) continue;
+          dates.push(`${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+        }
+        if (dates.length === 0) {
+          toast("Aucun jour à saisir pour ce mois.", 'warning');
+          return false;
+        }
+
+        let existing = new Set();
+        if (skipExisting) {
+          try {
+            const rows = await api.getPointagesRange({
+              date_debut: dates[0],
+              date_fin: dates[dates.length - 1],
+              matricules: checked.map(c => c.matricule)
+            });
+            existing = new Set((rows || []).map(r => `${r.matricule}|${r.date}`));
+          } catch (err) {
+            console.error(err);
+            toast("Impossible de vérifier les pointages existants : rien n'a été enregistré.", 'danger');
+            return false;
+          }
+        }
+
+        checked.forEach(emp => {
+          const entree = globalEntree || emp.entree;
+          const sortie = globalSortie || emp.sortie;
+          dates.forEach(dateStr => {
+            if (skipExisting && existing.has(`${emp.matricule}|${dateStr}`)) return;
+            list.push({
+              matricule: emp.matricule,
+              date: dateStr,
+              heureEntree: entree,
+              heureSortie: sortie,
+              notes
+            });
+          });
+        });
+
+        if (list.length === 0) {
+          toast("Tous les pointages de cette période existent déjà : rien à enregistrer.", 'warning');
+          return false;
+        }
+        summary = `${checked.length} employé(s) sur ${dates.length} jour(s)`;
+      } else {
+        const dateStr = document.getElementById('bulk-day-date')?.value;
+        if (!dateStr) {
+          toast("Choisissez une date.", 'warning');
+          return false;
+        }
+        const rows = Array.from(document.querySelectorAll('#bulk-day-grid tr[data-matricule]'));
+        if (rows.length === 0) {
+          toast("Sélectionnez au moins un employé.", 'warning');
+          return false;
+        }
+
+        let incomplete = 0;
+        rows.forEach(row => {
+          const matricule = row.getAttribute('data-matricule');
+          const entree = row.querySelector('.bulk-row-entree')?.value;
+          const sortie = row.querySelector('.bulk-row-sortie')?.value;
+          if (!entree && !sortie) return;
+          if (!entree || !sortie) {
+            incomplete++;
+            return;
+          }
           list.push({
-            id: `p_${matricule}_${dateStr}`,
             matricule,
             date: dateStr,
-            heureEntree,
-            heureSortie,
-            notes
+            heureEntree: entree,
+            heureSortie: sortie,
+            notes: 'Saisie groupée'
           });
+        });
+
+        if (incomplete > 0) {
+          toast(`${incomplete} ligne(s) incomplète(s) ignorée(s) : renseignez l'entrée et la sortie.`, 'warning');
         }
+        if (list.length === 0) {
+          toast("Aucun pointage complet à enregistrer.", 'warning');
+          return false;
+        }
+        summary = `${list.length} employé(s)`;
       }
 
       try {
-        await api.savePointages(list);
+        const res = await api.savePointages(list);
         await this.refreshJournalList();
-        toast('Pointages enregistrés.', 'success');
+        toast(`${res?.count ?? list.length} pointage(s) enregistré(s) (${summary}).`, 'success');
         return true;
       } catch (err) {
         toast(err.message, 'danger');
@@ -833,78 +1113,87 @@ export const PointageComponent = {
       }
     });
 
-    // --- LOGIQUE AUTOCOMPLETE ---
-    const searchInput = document.getElementById('pw-search-emp');
-    const hiddenInput = document.getElementById('pw-matricule');
-    const suggestionsDiv = document.getElementById('pw-suggestions');
+    // --- Filtres de la liste des employés ---
+    const searchEl = document.getElementById('bulk-emp-search');
+    const deptEl = document.getElementById('bulk-emp-dept');
+    const listEl = document.getElementById('bulk-emp-list');
 
-    if (searchInput && hiddenInput && suggestionsDiv) {
-      const showSuggestions = (query = '') => {
-        const cleanQuery = query.toLowerCase().trim();
-        const filtered = employees.filter(e => 
-          e.matricule.includes(cleanQuery) || 
-          e.nom.toLowerCase().includes(cleanQuery) || 
-          e.prenom.toLowerCase().includes(cleanQuery)
-        );
+    const applyFilter = () => {
+      if (!listEl) return;
+      const terms = (searchEl?.value || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+      const dept = deptEl?.value || '';
+      listEl.querySelectorAll('.bulk-emp-row').forEach(row => {
+        const haystack = row.getAttribute('data-search') || '';
+        const matchesQuery = terms.every(term => haystack.includes(term));
+        const matchesDept = !dept || row.getAttribute('data-dept') === dept;
+        row.style.display = matchesQuery && matchesDept ? 'flex' : 'none';
+      });
+    };
 
-        if (filtered.length === 0) {
-          suggestionsDiv.innerHTML = `<div style="padding: 10px; color: var(--text-muted); font-size: 0.85rem;">Aucun résultat</div>`;
-        } else {
-          suggestionsDiv.innerHTML = filtered.map(e => `
-            <div class="suggestion-item" data-matricule="${escapeHtml(e.matricule)}" data-display="${escapeHtml(`${e.matricule} - ${e.prenom} ${e.nom}`)}"
-                 data-start="${escapeHtml(e.horaire_debut)}" data-fin="${escapeHtml(e.horaire_fin)}"
-                 style="padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border-color); font-size: 0.85rem; transition: background 0.15s; background-color: var(--bg-secondary); color: var(--text-primary);">
-              <strong>${escapeHtml(e.matricule)}</strong> - ${escapeHtml(e.prenom)} ${escapeHtml(e.nom)}
-            </div>
-          `).join('');
-        }
-        suggestionsDiv.style.display = 'block';
-
-        // Traduction RTL si Arabe
-        const currentLang = localStorage.getItem('gica_lang') || 'fr';
-        if (currentLang === 'ar') {
-          suggestionsDiv.querySelectorAll('.suggestion-item').forEach(item => {
-            item.style.textAlign = 'right';
-          });
-        }
-
-        suggestionsDiv.querySelectorAll('.suggestion-item').forEach(item => {
-          item.addEventListener('click', (e) => {
-            const mat = e.currentTarget.getAttribute('data-matricule');
-            const display = e.currentTarget.getAttribute('data-display');
-            const startH = e.currentTarget.getAttribute('data-start') || '08:00';
-            const finH = e.currentTarget.getAttribute('data-fin') || '16:00';
-            
-            hiddenInput.value = mat;
-            searchInput.value = display;
-            suggestionsDiv.style.display = 'none';
-
-            // Auto-remplir les heures par défaut de l'employé
-            const [seH, seM] = startH.split(':');
-            const [ssH, ssM] = finH.split(':');
-            
-            const inH = document.getElementById('pw-entree-h');
-            const inM = document.getElementById('pw-entree-m');
-            const outH = document.getElementById('pw-sortie-h');
-            const outM = document.getElementById('pw-sortie-m');
-
-            if (inH) inH.value = seH;
-            if (inM) inM.value = seM;
-            if (outH) outH.value = ssH;
-            if (outM) outM.value = ssM;
-          });
-        });
-      };
-
-      searchInput.addEventListener('input', (e) => showSuggestions(e.target.value));
-      searchInput.addEventListener('focus', () => showSuggestions(searchInput.value));
-
-      document.addEventListener('click', (e) => {
-        if (e.target !== searchInput && e.target !== suggestionsDiv) {
-          suggestionsDiv.style.display = 'none';
-        }
+    if (searchEl) searchEl.addEventListener('input', applyFilter);
+    if (deptEl) deptEl.addEventListener('change', applyFilter);
+    if (listEl) {
+      listEl.addEventListener('change', (e) => {
+        if (e.target.classList.contains('bulk-emp-checkbox')) refreshAll();
       });
     }
+
+    document.getElementById('bulk-select-all')?.addEventListener('click', () => {
+      listEl?.querySelectorAll('.bulk-emp-row').forEach(row => {
+        if (row.style.display === 'none') return;
+        const cb = row.querySelector('.bulk-emp-checkbox');
+        if (cb) cb.checked = true;
+      });
+      refreshAll();
+    });
+
+    document.getElementById('bulk-select-none')?.addEventListener('click', () => {
+      listEl?.querySelectorAll('.bulk-emp-checkbox').forEach(cb => { cb.checked = false; });
+      refreshAll();
+    });
+
+    // --- Bascule Mois / Journée ---
+    const setMode = (next) => {
+      mode = next;
+      const monthBtn = document.getElementById('bulk-mode-month');
+      const dayBtn = document.getElementById('bulk-mode-day');
+      const monthFields = document.getElementById('bulk-month-fields');
+      const dayFields = document.getElementById('bulk-day-fields');
+      if (monthBtn && dayBtn) {
+        monthBtn.className = `btn btn-sm ${next === 'month' ? 'btn-primary' : 'btn-secondary'}`;
+        dayBtn.className = `btn btn-sm ${next === 'day' ? 'btn-primary' : 'btn-secondary'}`;
+        monthBtn.style.flex = '1';
+        dayBtn.style.flex = '1';
+      }
+      if (monthFields) monthFields.style.display = next === 'month' ? 'flex' : 'none';
+      if (dayFields) dayFields.style.display = next === 'day' ? 'flex' : 'none';
+      refreshAll();
+    };
+
+    document.getElementById('bulk-mode-month')?.addEventListener('click', () => setMode('month'));
+    document.getElementById('bulk-mode-day')?.addEventListener('click', () => setMode('day'));
+
+    // --- Mises à jour du récapitulatif ---
+    document.getElementById('bulk-month')?.addEventListener('change', updatePreview);
+    document.querySelectorAll('.bulk-weekday input').forEach(cb => cb.addEventListener('change', updatePreview));
+    document.getElementById('bulk-day-date')?.addEventListener('change', updatePreview);
+
+    document.getElementById('bulk-day-apply-all')?.addEventListener('click', () => {
+      const entree = document.getElementById('bulk-day-entree-all')?.value;
+      const sortie = document.getElementById('bulk-day-sortie-all')?.value;
+      document.querySelectorAll('#bulk-day-grid tr[data-matricule]').forEach(row => {
+        const inEl = row.querySelector('.bulk-row-entree');
+        const outEl = row.querySelector('.bulk-row-sortie');
+        if (entree && inEl) inEl.value = entree;
+        if (sortie && outEl) outEl.value = sortie;
+      });
+      updatePreview();
+    });
+
+    document.getElementById('bulk-day-grid')?.addEventListener('input', updatePreview);
+    document.getElementById('bulk-day-grid')?.addEventListener('change', updatePreview);
+
+    setMode('month');
   },
 
   handleExcelFile(file) {
@@ -1710,17 +1999,22 @@ export const PointageComponent = {
             }
           </style>
         </head>
-        <body onload="window.print(); window.close();">
-          <table class="header-table">
-            <tr>
-              <td class="title-left" style="width: 25%;">SCHB</td>
-              <td style="width: 50%;">
-                <h1 class="title-main">Cimenterie Hamma Bouziane</h1>
-                <h2 class="title-sub">Mouvement Personnel</h2>
-              </td>
-              <td class="title-right" style="width: 25%;">${monthName} // ${year}</td>
-            </tr>
-          </table>
+        <body onload="setTimeout(function(){ window.print(); window.close(); }, 350);">
+          <!-- En-tête Officiel SCHB GICA Landscape -->
+          <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #1F497D; padding-bottom: 8px; margin-bottom: 12px; font-family: Calibri, Arial, sans-serif;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <img src="${LETTERHEAD_ASSETS.logoGica}" alt="GROUPE GICA" style="height: 55px; width: auto; object-fit: contain;" />
+            </div>
+            <div style="text-align: center; color: #1F497D;">
+              <div style="font-size: 13pt; font-weight: 800; font-family: 'Traditional Arabic', Arial; direction: rtl;">المـجمــع الصنــاعي لإسمنت الجــزائــر</div>
+              <div style="font-size: 9.5pt; font-weight: 800; letter-spacing: 0.5px;">GROUPE INDUSTRIEL DES CIMENTS D'ALGERIE — « S.C.H.B »</div>
+              <div style="font-size: 11pt; font-weight: 900; letter-spacing: 1px; margin-top: 2px; color: #000;">CIMENTERIE HAMMA BOUZIANE — ÉTAT RÉCAPITULATIF DU MOUVEMENT DU PERSONNEL</div>
+            </div>
+            <div style="text-align: right; font-size: 9pt; font-weight: bold; color: #1F497D;">
+              <div style="background: #eff6ff; border: 1.5px solid #1F497D; padding: 4px 10px; border-radius: 4px;">PÉRIODE : ${monthName.toUpperCase()} ${year}</div>
+              <div style="font-size: 7.5pt; color: #64748b; margin-top: 4px;">Réf : SCHB/DRH/GP-${year}</div>
+            </div>
+          </div>
 
           <table class="recap-table">
             <thead>
@@ -1766,6 +2060,11 @@ export const PointageComponent = {
               </td>
             </tr>
           </table>
+
+          <!-- Pied de page officiel SCHB GICA -->
+          <div style="margin-top: 15px;">
+            ${renderOfficialFooter()}
+          </div>
         </body>
       </html>
     `;
@@ -1934,125 +2233,120 @@ export const PointageComponent = {
     const primeNuit = shiftsNuit * 800;
     const totalPrimes = primePanier + primeTransport + primeNuit;
 
-    const modalHtml = `
-      <div id="printable-monthly-sheet" style="background: white; color: #0f172a; padding: 24px; font-family: 'Inter', Arial, sans-serif; border: 1px solid #cbd5e1; border-radius: 4px; max-width: 820px; margin: 0 auto;">
-        
-        <!-- En-Tête Officiel Cimenterie SCHB GICA -->
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 16px;">
-          <div>
-            <div style="font-size: 0.75rem; text-transform: uppercase; font-weight: 700; color: #475569;">République Algérienne Démocratique et Populaire</div>
-            <div style="font-size: 0.85rem; font-weight: 800; color: #0f172a;">GROUPE INDUSTRIEL DES CIMENTS D'ALGÉRIE (GICA)</div>
-            <div style="font-size: 1.05rem; font-weight: 900; color: #13547a;">SOCIÉTÉ DES CIMENTS DE HAMMA BOUZIANE — SCHB</div>
-            <div style="font-size: 0.8rem; color: #64748b;">Direction des Ressources Humaines • Service Administration du Personnel</div>
-          </div>
-          <div style="text-align: right;">
-            <div style="border: 2px solid #13547a; padding: 6px 12px; border-radius: 4px; font-weight: 800; color: #13547a; font-size: 0.9rem;">
-              FICHE DE POINTAGE MENSUELLE
-            </div>
-            <div style="font-size: 0.8rem; font-weight: 700; margin-top: 4px;">PÉRIODE : ${nomMois.toUpperCase()} ${annee}</div>
-          </div>
-        </div>
+    const refDoc = `SCHB/PTG-${emp.matricule}-${annee}-${String(mois).padStart(2, '0')}`;
+    const dateDoc = formatDateFR(new Date().toISOString().split('T')[0]);
 
-        <!-- Encadré Employé -->
-        <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; font-size: 0.88rem;">
-          <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;">
-            <div><span style="color: #64748b;">Salarié :</span> <strong>${escapeHtml(emp.prenom)} ${escapeHtml(emp.nom)}</strong></div>
-            <div><span style="color: #64748b;">Matricule :</span> <strong>#${escapeHtml(emp.matricule)}</strong></div>
-            <div><span style="color: #64748b;">Département :</span> <strong>${escapeHtml(emp.departement || '-')}</strong></div>
-            <div><span style="color: #64748b;">Poste :</span> <strong>${escapeHtml(emp.poste || '-')}</strong></div>
-          </div>
+    const sheetBodyHtml = `
+      <!-- Titre du Document -->
+      <div style="text-align: center; margin: 16px 0 20px 0;">
+        <h2 style="margin: 0; font-size: 1.45rem; font-weight: 900; letter-spacing: 1px; text-transform: uppercase; color: #1F497D; text-decoration: underline;">
+          FICHE MENSUELLE DE POINTAGE & PRÉ-PAIE
+        </h2>
+        <div style="font-size: 9pt; font-weight: 800; color: #000; margin-top: 4px;">
+          PÉRIODE : ${nomMois.toUpperCase()} ${annee}
         </div>
+      </div>
 
-        <!-- Récapitulatif Heures & Primes Conventionnelles Cimenterie -->
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 16px; text-align: center; font-size: 0.85rem;">
-          <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; background: #fff;">
-            <div style="color: #64748b; font-size: 0.75rem; text-transform: uppercase;">Jours Travaillés</div>
-            <div style="font-size: 1.25rem; font-weight: 800; color: #13547a;">${stats.joursTravailles} j</div>
-          </div>
-          <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; background: #fff;">
-            <div style="color: #64748b; font-size: 0.75rem; text-transform: uppercase;">Total Heures</div>
-            <div style="font-size: 1.25rem; font-weight: 800; color: #13547a;">${stats.heuresTravaillees.toFixed(1)} h</div>
-          </div>
-          <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px; background: #fff;">
-            <div style="color: #64748b; font-size: 0.75rem; text-transform: uppercase;">Heures Supp</div>
-            <div style="font-size: 1.25rem; font-weight: 800; color: #16a34a;">+${stats.heuresSuppCumulees} h</div>
-          </div>
-          <div style="border: 1px solid #7c3aed; border-radius: 6px; padding: 8px; background: rgba(124, 58, 237, 0.05);">
-            <div style="color: #7c3aed; font-size: 0.75rem; text-transform: uppercase; font-weight: 700;">Primes Conventionnelles</div>
-            <div style="font-size: 1.25rem; font-weight: 900; color: #7c3aed;">${totalPrimes.toLocaleString()} DA</div>
-          </div>
+      <!-- Encadré Employé -->
+      <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; font-size: 8.5pt; font-family: Calibri, Arial, sans-serif;">
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;">
+          <div><span style="color: #64748b;">Salarié :</span> <strong>${escapeHtml(emp.prenom)} ${escapeHtml(emp.nom)}</strong></div>
+          <div><span style="color: #64748b;">Matricule :</span> <strong>#${escapeHtml(emp.matricule)}</strong></div>
+          <div><span style="color: #64748b;">Département :</span> <strong>${escapeHtml(emp.departement || '-')}</strong></div>
+          <div><span style="color: #64748b;">Poste :</span> <strong>${escapeHtml(emp.poste || '-')}</strong></div>
         </div>
+      </div>
 
-        <!-- Détail Primes Cimenterie -->
-        <div style="background: rgba(19,84,122,0.04); border: 1px solid rgba(19,84,122,0.15); border-radius: 6px; padding: 8px 14px; margin-bottom: 16px; font-size: 0.8rem; display: flex; justify-content: space-around;">
-          <div>Prime Panier (600 DA/j) : <strong>${primePanier.toLocaleString()} DA</strong> (${stats.joursTravailles} jours)</div>
-          <div>Indemnité Transport (400 DA/j) : <strong>${primeTransport.toLocaleString()} DA</strong></div>
-          <div>Prime Quart / Nuit (800 DA) : <strong>${primeNuit.toLocaleString()} DA</strong> (${shiftsNuit} postes)</div>
+      <!-- Récapitulatif Heures & Primes Conventionnelles Cimenterie -->
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; text-align: center; font-size: 8pt; font-family: Calibri, Arial, sans-serif;">
+        <div style="border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px; background: #fff;">
+          <div style="color: #64748b; font-size: 7pt; text-transform: uppercase;">Jours Travaillés</div>
+          <div style="font-size: 1.15rem; font-weight: 800; color: #1F497D;">${stats.joursTravailles} j</div>
         </div>
+        <div style="border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px; background: #fff;">
+          <div style="color: #64748b; font-size: 7pt; text-transform: uppercase;">Total Heures</div>
+          <div style="font-size: 1.15rem; font-weight: 800; color: #1F497D;">${stats.heuresTravaillees.toFixed(1)} h</div>
+        </div>
+        <div style="border: 1px solid #cbd5e1; border-radius: 4px; padding: 6px; background: #fff;">
+          <div style="color: #64748b; font-size: 7pt; text-transform: uppercase;">Heures Supp</div>
+          <div style="font-size: 1.15rem; font-weight: 800; color: #16a34a;">+${stats.heuresSuppCumulees} h</div>
+        </div>
+        <div style="border: 1px solid #7c3aed; border-radius: 4px; padding: 6px; background: rgba(124, 58, 237, 0.05);">
+          <div style="color: #7c3aed; font-size: 7pt; text-transform: uppercase; font-weight: 700;">Primes Conventionnelles</div>
+          <div style="font-size: 1.15rem; font-weight: 900; color: #7c3aed;">${totalPrimes.toLocaleString()} DA</div>
+        </div>
+      </div>
 
-        <!-- Tableau des Pointages du Mois -->
-        <div style="margin-bottom: 20px; max-height: 380px; overflow-y: auto; border: 1px solid #cbd5e1; border-radius: 4px;">
-          <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: center;">
-            <thead>
-              <tr style="background: #f1f5f9; border-bottom: 1px solid #cbd5e1; font-weight: 700;">
-                <th style="padding: 6px 8px; text-align: left;">Date</th>
-                <th style="padding: 6px 8px;">Entrée</th>
-                <th style="padding: 6px 8px;">Sortie</th>
-                <th style="padding: 6px 8px;">Durée</th>
-                <th style="padding: 6px 8px;">Retard</th>
-                <th style="padding: 6px 8px;">Heures Supp</th>
-                <th style="padding: 6px 8px;">Shift</th>
-                <th style="padding: 6px 8px; text-align: left;">Observations</th>
+      <!-- Détail Primes Cimenterie -->
+      <div style="background: rgba(31,73,125,0.03); border: 1px solid rgba(31,73,125,0.15); border-radius: 4px; padding: 6px 12px; margin-bottom: 12px; font-size: 7.5pt; display: flex; justify-content: space-around; font-family: Calibri, Arial, sans-serif;">
+        <div>Prime Panier (600 DA/j) : <strong>${primePanier.toLocaleString()} DA</strong> (${stats.joursTravailles} jours)</div>
+        <div>Indemnité Transport (400 DA/j) : <strong>${primeTransport.toLocaleString()} DA</strong></div>
+        <div>Prime Quart / Nuit (800 DA) : <strong>${primeNuit.toLocaleString()} DA</strong> (${shiftsNuit} postes)</div>
+      </div>
+
+      <!-- Tableau des Pointages du Mois -->
+      <div style="margin-bottom: 16px; border: 1px solid #cbd5e1; border-radius: 4px; font-family: Calibri, Arial, sans-serif;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 7.5pt; text-align: center;">
+          <thead>
+            <tr style="background: #1F497D; color: white; font-weight: 700;">
+              <th style="padding: 5px 6px; text-align: left;">Date</th>
+              <th style="padding: 5px 6px;">Entrée</th>
+              <th style="padding: 5px 6px;">Sortie</th>
+              <th style="padding: 5px 6px;">Durée</th>
+              <th style="padding: 5px 6px;">Retard</th>
+              <th style="padding: 5px 6px;">H. Supp</th>
+              <th style="padding: 5px 6px;">Shift</th>
+              <th style="padding: 5px 6px; text-align: left;">Observations</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${pointages.length === 0 ? `
+              <tr><td colspan="8" style="padding: 12px; color: #64748b;">Aucun enregistrement de pointage pour ce mois.</td></tr>
+            ` : pointages.map(p => `
+              <tr style="border-bottom: 1px solid #e2e8f0;">
+                <td style="padding: 4px 6px; text-align: left; font-weight: 600;">${formatDateFR(p.date)}</td>
+                <td style="padding: 4px 6px;">${p.heure_entree || '--:--'}</td>
+                <td style="padding: 4px 6px;">${p.heure_sortie || '--:--'}</td>
+                <td style="padding: 4px 6px; font-weight: 600;">${p.heures_travaillees ? p.heures_travaillees + 'h' : '-'}</td>
+                <td style="padding: 4px 6px; color: ${p.retard > 0 ? '#d97706' : 'inherit'};">${p.retard > 0 ? p.retard + 'm' : '-'}</td>
+                <td style="padding: 4px 6px; color: ${p.heures_supp > 0 ? '#16a34a' : 'inherit'}; font-weight: ${p.heures_supp > 0 ? '700' : 'normal'};">${p.heures_supp > 0 ? '+' + p.heures_supp + 'h' : '-'}</td>
+                <td style="padding: 4px 6px;">${escapeHtml(p.shift_type || 'jour')}</td>
+                <td style="padding: 4px 6px; text-align: left; font-size: 7pt; color: #64748b;">${escapeHtml(p.notes || '')}</td>
               </tr>
-            </thead>
-            <tbody>
-              ${pointages.length === 0 ? `
-                <tr><td colspan="8" style="padding: 16px; color: #64748b;">Aucun enregistrement de pointage pour ce mois.</td></tr>
-              ` : pointages.map(p => `
-                <tr style="border-bottom: 1px solid #e2e8f0;">
-                  <td style="padding: 5px 8px; text-align: left; font-weight: 600;">${formatDateFR(p.date)}</td>
-                  <td style="padding: 5px 8px;">${p.heure_entree || '--:--'}</td>
-                  <td style="padding: 5px 8px;">${p.heure_sortie || '--:--'}</td>
-                  <td style="padding: 5px 8px; font-weight: 600;">${p.heures_travaillees ? p.heures_travaillees + 'h' : '-'}</td>
-                  <td style="padding: 5px 8px; color: ${p.retard > 0 ? '#d97706' : 'inherit'};">${p.retard > 0 ? p.retard + 'm' : '-'}</td>
-                  <td style="padding: 5px 8px; color: ${p.heures_supp > 0 ? '#16a34a' : 'inherit'}; font-weight: ${p.heures_supp > 0 ? '700' : 'normal'};">${p.heures_supp > 0 ? '+' + p.heures_supp + 'h' : '-'}</td>
-                  <td style="padding: 5px 8px;">${escapeHtml(p.shift_type || 'jour')}</td>
-                  <td style="padding: 5px 8px; text-align: left; font-size: 0.75rem; color: #64748b;">${escapeHtml(p.notes || '')}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
 
-        <!-- Blocs de Signature Officiels -->
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 16px; font-size: 0.85rem;">
-          <div style="border: 1px dashed #94a3b8; border-radius: 6px; padding: 12px; height: 110px; display: flex; flex-direction: column; justify-content: space-between;">
-            <div>
-              <div style="font-weight: 800; color: #0f172a;">Émargement du Salarié</div>
-              <div style="font-size: 0.72rem; color: #64748b;">Mention manuscrite « Lu et approuvé, certifié exact »</div>
-            </div>
-            <div style="font-size: 0.72rem; color: #94a3b8; border-top: 1px dotted #cbd5e1; padding-top: 4px;">
-              Date : ____ / ____ / ${annee} • Signature :
-            </div>
+      <!-- Blocs de Signature Officiels -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 14px; font-size: 8pt; font-family: Calibri, Arial, sans-serif;">
+        <div style="border: 1px dashed #94a3b8; border-radius: 4px; padding: 10px; height: 95px; display: flex; flex-direction: column; justify-content: space-between;">
+          <div>
+            <div style="font-weight: 800; color: #0f172a;">Émargement du Salarié</div>
+            <div style="font-size: 7pt; color: #64748b;">Mention manuscrite « Lu et approuvé, certifié exact »</div>
           </div>
-
-          <div style="border: 2px solid #13547a; background: rgba(19,84,122,0.02); border-radius: 6px; padding: 12px; height: 110px; display: flex; flex-direction: column; justify-content: space-between;">
-            <div>
-              <div style="font-weight: 800; color: #13547a;">Visa Chef de Service & Direction RH</div>
-              <div style="font-size: 0.72rem; color: #64748b;">Validé pour prise en compte en paie • SCHB GICA</div>
-            </div>
-            <div style="font-size: 0.72rem; color: #13547a; font-weight: 700; border-top: 1px dotted rgba(19,84,122,0.3); padding-top: 4px;">
-              Date : ____ / ____ / ${annee} • Cachet & Signature :
-            </div>
+          <div style="font-size: 7pt; color: #94a3b8; border-top: 1px dotted #cbd5e1; padding-top: 4px;">
+            Date : ____ / ____ / ${annee} • Signature :
           </div>
         </div>
 
-        <!-- Bas de page légal -->
-        <div style="margin-top: 16px; border-top: 1px solid #cbd5e1; padding-top: 8px; font-size: 0.7rem; color: #64748b; text-align: center;">
-          Document officiel généré par le Portail RH SCHB GICA • Conforme à la Convention Collective de la Cimenterie
+        <div style="border: 1.5px solid #1F497D; background: rgba(31,73,125,0.02); border-radius: 4px; padding: 10px; height: 95px; display: flex; flex-direction: column; justify-content: space-between;">
+          <div>
+            <div style="font-weight: 800; color: #1F497D;">Visa Chef de Service & Direction RH</div>
+            <div style="font-size: 7pt; color: #64748b;">Validé pour prise en compte en paie • SCHB GICA</div>
+          </div>
+          <div style="font-size: 7pt; color: #1F497D; font-weight: 700; border-top: 1px dotted rgba(31,73,125,0.3); padding-top: 4px;">
+            Date : ____ / ____ / ${annee} • Cachet & Signature :
+          </div>
         </div>
       </div>
     `;
+
+    const modalHtml = wrapInOfficialDocument(sheetBodyHtml, {
+      ref: refDoc,
+      date: dateDoc,
+      departement: 'DIRECTION DES RESSOURCES HUMAINES • GESTION DU PERSONNEL'
+    });
 
     openModal(
       `Fiche Mensuelle Signée — ${emp.prenom} ${emp.nom} (${nomMois} ${annee})`,
@@ -2067,26 +2361,12 @@ export const PointageComponent = {
           label: 'Imprimer / Exporter en PDF',
           class: 'btn btn-primary',
           onClick: () => {
-            const printContent = document.getElementById('printable-monthly-sheet').outerHTML;
-            const win = window.open('', '_blank');
-            win.document.write(`
-              <html>
-                <head>
-                  <title>Fiche de Pointage Mensuelle — ${emp.prenom} ${emp.nom} — SCHB GICA</title>
-                  <style>
-                    body { margin: 20px; font-family: Arial, sans-serif; }
-                    @media print {
-                      body { margin: 0; }
-                      @page { size: A4 portrait; margin: 10mm; }
-                    }
-                  </style>
-                </head>
-                <body onload="window.print(); window.close();">
-                  ${printContent}
-                </body>
-              </html>
-            `);
-            win.document.close();
+            printOfficialDocument(sheetBodyHtml, {
+              documentTitle: `Fiche_Pointage_${emp.matricule}_${nomMois}_${annee}`,
+              ref: refDoc,
+              date: dateDoc,
+              departement: 'DIRECTION DES RESSOURCES HUMAINES • GESTION DU PERSONNEL'
+            });
           }
         }
       ]

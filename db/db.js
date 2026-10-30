@@ -245,6 +245,17 @@ export async function initDB() {
         INDEX idx_hab_exp (date_expiration)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+      CREATE TABLE IF NOT EXISTS quick_decision_tokens (
+        jti VARCHAR(64) PRIMARY KEY,
+        absence_id VARCHAR(100) NOT NULL,
+        action ENUM('approve', 'reject') NOT NULL,
+        expires_at DATETIME NOT NULL,
+        used_at DATETIME NULL,
+        used_by_ip VARCHAR(64) NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_qdt_absence (absence_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
       CREATE TABLE IF NOT EXISTS demandes_documents (
         id VARCHAR(64) PRIMARY KEY,
         matricule VARCHAR(50) NOT NULL,
@@ -263,6 +274,8 @@ export async function initDB() {
     // (MySQL 8.0.17 ne supporte pas "ADD COLUMN IF NOT EXISTS", d'où cette vérification manuelle).
     await ensureColumn('employees', 'photo', 'LONGTEXT NULL');
     await ensureColumn('employees', 'last_accrual_date', "VARCHAR(20) DEFAULT NULL");
+    // Mot de passe temporaire à changer obligatoirement à la première connexion
+    await ensureColumn('employees', 'must_change_password', 'INT DEFAULT 0');
     await ensureColumn('absences', 'justificatif', 'LONGTEXT NULL');
     await ensureColumn('absences', 'statut_superviseur', "ENUM('En attente','Approuvé','Refusé') DEFAULT NULL");
     await ensureColumn('absences', 'decide_par_superviseur', 'VARCHAR(100) DEFAULT NULL');
@@ -361,6 +374,10 @@ async function migrateFromSQLiteIfAvailable() {
 
 // Injecter des données de démonstration dans MySQL si aucune donnée n'existe
 async function seedDefaultDataIfEmpty() {
+  // Les comptes de démonstration (1001/1001, 1002/1002, ...) ne doivent jamais être
+  // créés sur une installation réelle : mettre SEED_DEMO=false dans .env.
+  if (process.env.SEED_DEMO === 'false') return;
+
   const [rows] = await pool.query("SELECT COUNT(*) as count FROM employees");
   if (rows[0].count > 0) return;
 

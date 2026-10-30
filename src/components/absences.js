@@ -1,6 +1,7 @@
 import { api } from '../api.js';
 import { openModal, closeModal, getCurrentUser, toast, confirmDialog } from '../main.js';
 import { escapeHtml, formatDateFR, fileToDataUrl } from '../utils.js';
+import { renderOfficialHeader, renderOfficialFooter, renderOfficialSeal, printOfficialDocument } from './letterhead.js';
 
 // Badge Étape 1 : Validation Responsable / IT Manager
 function renderStep1Badge(a) {
@@ -80,6 +81,9 @@ export const AbsencesComponent = {
 
     let absences = [];
     let employees = [];
+    // Périmètre de décision du responsable : ses subordonnés directs et les équipes dont il
+    // assure l'intérim actif. Le serveur applique exactement le même périmètre.
+    const interimTitulaires = new Set();
 
     try {
       if (isEmployee) {
@@ -89,6 +93,12 @@ export const AbsencesComponent = {
         const allEmployees = await api.getEmployees();
         employees = allEmployees.filter(e => e.departement === user.departement || e.SuperieurMatricule === user.matricule);
         absences = await api.getAbsences();
+        const today = new Date().toISOString().split('T')[0];
+        const interims = await api.getInterims().catch(() => []);
+        interims
+          .filter(i => i.matricule_interimaire === user.matricule && i.statut === 'Actif'
+            && i.date_debut <= today && i.date_fin >= today)
+          .forEach(i => interimTitulaires.add(i.matricule_titulaire));
       } else {
         // HR voit tout
         absences = await api.getAbsences();
@@ -306,6 +316,8 @@ export const AbsencesComponent = {
                         ` : isSupervisor ? `
                           ${a.matricule === user.matricule ? `
                             <span style="color: var(--text-muted); font-size: 0.8rem;">Votre propre demande</span>
+                          ` : (a.SuperieurMatricule !== user.matricule && !interimTitulaires.has(a.SuperieurMatricule)) ? `
+                            <span style="color: var(--text-muted); font-size: 0.78rem; font-style: italic;">Hors de votre périmètre de validation</span>
                           ` : a.statut_superviseur === 'Approuvé' ? `
                             <span style="color: var(--color-success); font-weight: 700; font-size: 0.8rem; display: inline-flex; align-items: center; gap: 4px;">
                               <i data-lucide="check-check" style="width: 15px; height: 15px;"></i> Avis Favorable émis
@@ -654,7 +666,7 @@ export const AbsencesComponent = {
           </div>
           <div class="form-group">
             <label for="abs-duree">Nombre de Jours*</label>
-            <input type="number" step="0.5" id="abs-duree" class="form-control" placeholder="Nombre de jours ouvrés" required min="0.5">
+            <input type="number" step="0.5" id="abs-duree" class="form-control" placeholder="Nombre de jours ouvrés" required min="0.5" value="1">
           </div>
         </div>
 
@@ -825,8 +837,75 @@ export const AbsencesComponent = {
       }
     };
 
-    if (dateDebutInput) dateDebutInput.addEventListener('change', checkOverlapConflicts);
-    if (dateFinInput) dateFinInput.addEventListener('change', checkOverlapConflicts);
+    // --- SYNCHRONISATION BIDIRECTIONNELLE DATES <-> NOMBRE DE JOURS ---
+    const dureeInput = document.getElementById('abs-duree');
+    let isSyncingDates = false;
+
+    const parseDateMidday = (val) => {
+      if (!val) return null;
+      const parts = String(val).split('-').map(Number);
+      if (parts.length !== 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) return null;
+      return new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
+    };
+
+    const formatDateToYMD = (date) => {
+      const y = date.getFullYear();
+      const m = String(date.getMonth() + 1).padStart(2, '0');
+      const d = String(date.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
+
+    // 1. Calcul automatique de la durée à partir de date_debut et date_fin
+    const updateDureeFromDates = () => {
+      if (isSyncingDates || !dateDebutInput || !dateFinInput || !dureeInput) return;
+      const dDeb = parseDateMidday(dateDebutInput.value);
+      const dFin = parseDateMidday(dateFinInput.value);
+      if (!dDeb || !dFin) return;
+
+      isSyncingDates = true;
+      if (dFin < dDeb) {
+        // Si date de fin antérieure à date de début, aligner date_fin
+        dateFinInput.value = dateDebutInput.value;
+        dureeInput.value = '1';
+      } else {
+        const diffMs = dFin.getTime() - dDeb.getTime();
+        const diffDays = Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1;
+        dureeInput.value = diffDays > 0 ? diffDays : 1;
+      }
+      isSyncingDates = false;
+      checkOverlapConflicts();
+    };
+
+    // 2. Calcul automatique de la date de fin à partir de la durée saisie
+    const updateDatesFromDuree = () => {
+      if (isSyncingDates || !dateDebutInput || !dateFinInput || !dureeInput) return;
+      const dDeb = parseDateMidday(dateDebutInput.value);
+      const duree = parseFloat(dureeInput.value);
+      if (!dDeb || isNaN(duree) || duree <= 0) return;
+
+      isSyncingDates = true;
+      const addedDays = Math.max(0, Math.ceil(duree) - 1);
+      const dFin = new Date(dDeb.getTime() + addedDays * 86400000);
+      dateFinInput.value = formatDateToYMD(dFin);
+      isSyncingDates = false;
+      checkOverlapConflicts();
+    };
+
+    if (dateDebutInput) {
+      dateDebutInput.addEventListener('change', updateDureeFromDates);
+      dateDebutInput.addEventListener('input', updateDureeFromDates);
+    }
+    if (dateFinInput) {
+      dateFinInput.addEventListener('change', updateDureeFromDates);
+      dateFinInput.addEventListener('input', updateDureeFromDates);
+    }
+    if (dureeInput) {
+      dureeInput.addEventListener('input', updateDatesFromDuree);
+      dureeInput.addEventListener('change', updateDatesFromDuree);
+    }
+
+    // Calcul initial au chargement
+    updateDureeFromDates();
 
     // Initial check for employee
     if (hiddenMatriculeInput?.value) {
@@ -989,141 +1068,101 @@ export const AbsencesComponent = {
       d.setDate(d.getDate() + 1);
       return formatDateFR(d.toISOString().split('T')[0]);
     };
+    const refDoc = `SCHB/DRH/TC-${absence.id}/${new Date().getFullYear()}`;
 
-    // Création de l'overlay d'impression officiel
-    const existingOverlay = document.getElementById('printable-titre-conge-overlay');
-    if (existingOverlay) existingOverlay.remove();
+    const titreBodyHtml = `
+      <!-- Titre du document -->
+      <div style="text-align: center; margin: 20px 0 24px 0;">
+        <h1 style="font-size: 1.6rem; font-weight: 900; text-transform: uppercase; letter-spacing: 1.5px; text-decoration: underline; margin: 0; color: #1F497D;">
+          TITRE DE CONGÉ OFFICIEL
+        </h1>
+        <div style="font-size: 8.5pt; color: #64748b; margin-top: 4px; font-weight: 600;">
+          Document réglementaire conforme à la Convention Collective & au Règlement Intérieur SCHB GICA
+        </div>
+      </div>
 
-    const overlay = document.createElement('div');
-    overlay.id = 'printable-titre-conge-overlay';
-    overlay.innerHTML = `
-      <div style="max-width: 800px; margin: 0 auto; font-family: 'Plus Jakarta Sans', Arial, sans-serif; color: #0f172a; line-height: 1.5;">
-        <!-- En-tête officiel République & Entreprise -->
-        <div style="text-align: center; border-bottom: 2px solid #0f172a; padding-bottom: 12px; margin-bottom: 20px;">
-          <div style="font-size: 11pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">
-            RÉPUBLIQUE ALGÉRIENNE DÉMOCRATIQUE ET POPULAIRE
-          </div>
-          <div style="font-size: 9.5pt; color: #475569; margin-top: 2px;">
-            MINISTÈRE DE L'INDUSTRIE ET DE LA PRODUCTION PHARMACEUTIQUE
-          </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding: 0 10px;">
-            <div style="text-align: left;">
-              <div style="font-size: 13pt; font-weight: 800; color: #1e3a8a;">GROUPE GICA</div>
-              <div style="font-size: 10pt; font-weight: 700;">SOCIÉTÉ DES CIMENTS DE HACHAÏCHI BÉJAÏA (SCHB)</div>
-              <div style="font-size: 8.5pt; color: #64748b;">Direction des Ressources Humaines & Formation</div>
-            </div>
-            <div style="text-align: right; font-size: 9pt; color: #334155;">
-              <div><strong>Réf :</strong> SCHB/DRH/CONGÉ-${absence.id}/${new Date().getFullYear()}</div>
-              <div><strong>Béjaïa, le :</strong> ${dateEmission}</div>
-            </div>
-          </div>
+      <!-- Corps des informations collaborateur -->
+      <table style="width: 100%; border-collapse: collapse; font-size: 9.5pt; margin-bottom: 20px; font-family: Calibri, Arial, sans-serif;">
+        <tbody>
+          <tr style="border-bottom: 1px solid #cbd5e1;">
+            <td style="padding: 7px 6px; width: 35%; color: #475569; font-weight: 600;">Matricule Employé :</td>
+            <td style="padding: 7px 6px; font-weight: 800; color: #1F497D; font-size: 10.5pt;">#${escapeHtml(absence.matricule)}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #cbd5e1;">
+            <td style="padding: 7px 6px; color: #475569; font-weight: 600;">Nom & Prénom :</td>
+            <td style="padding: 7px 6px; font-weight: 700; text-transform: uppercase;">${escapeHtml(empName)}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #cbd5e1;">
+            <td style="padding: 7px 6px; color: #475569; font-weight: 600;">Département / Direction :</td>
+            <td style="padding: 7px 6px; font-weight: 600;">${escapeHtml(absence.departement || '—')}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #cbd5e1;">
+            <td style="padding: 7px 6px; color: #475569; font-weight: 600;">Fonction / Poste :</td>
+            <td style="padding: 7px 6px;">${escapeHtml(absence.poste || '—')}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #cbd5e1;">
+            <td style="padding: 7px 6px; color: #475569; font-weight: 600;">Nature du Congé :</td>
+            <td style="padding: 7px 6px; font-weight: 700; color: #0284c7;">CONGÉ ${escapeHtml(absence.type_conge ? absence.type_conge.toUpperCase() : 'ANNUEL')}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #cbd5e1;">
+            <td style="padding: 7px 6px; color: #475569; font-weight: 600;">Durée accordée :</td>
+            <td style="padding: 7px 6px; font-weight: 800; font-size: 10.5pt; color: #1F497D;">${absence.duree_jours} jour(s) ouvrable(s)</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #cbd5e1;">
+            <td style="padding: 7px 6px; color: #475569; font-weight: 600;">Période d'absence :</td>
+            <td style="padding: 7px 6px; font-weight: 700;">
+              Du <strong>${formatDateFR(absence.date_debut)}</strong> au <strong>${formatDateFR(absence.date_fin)}</strong> inclus
+            </td>
+          </tr>
+          <tr style="border-bottom: 1px solid #cbd5e1;">
+            <td style="padding: 7px 6px; color: #475569; font-weight: 600;">Date obligatoire de reprise :</td>
+            <td style="padding: 7px 6px; font-weight: 800; color: #166534;">${dateRepriseCalc()} dès la première heure</td>
+          </tr>
+          <tr>
+            <td style="padding: 7px 6px; color: #475569; font-weight: 600;">Motif / Observation :</td>
+            <td style="padding: 7px 6px; font-style: italic; color: #64748b;">${escapeHtml(absence.motif || 'Congé réglementaire conforme')}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Mentions légales & obligations -->
+      <div style="background: #f8fafc; border-left: 4px solid #1F497D; padding: 10px 14px; font-size: 8pt; color: #334155; margin-bottom: 24px; line-height: 1.45;">
+        <strong>AVIS TRÈS IMPORTANT :</strong> L'intéressé(e) est tenu(e) de reprendre le service le jour fixé ci-dessus. Tout retard non justifié dans les quarante-huit (48) heures entraîne l'application des sanctions disciplinaires prévues par le règlement intérieur de la Société des Ciments de Hamma Bouziane SCHB GICA.
+      </div>
+
+      <!-- Zone des Visas & Signatures officielles -->
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 20px; font-family: Calibri, Arial, sans-serif;">
+        <div style="border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; min-height: 110px; text-align: center; font-size: 8pt; display: flex; flex-direction: column; justify-content: space-between;">
+          <div style="font-weight: 700; color: #1e293b;">Émargement du Salarié</div>
+          <div style="font-size: 7.5pt; color: #94a3b8;">« Lu et approuvé »</div>
         </div>
 
-        <!-- Titre du document -->
-        <div style="text-align: center; margin: 24px 0 20px 0;">
-          <div style="display: inline-block; padding: 8px 32px; border: 2px solid #1e3a8a; border-radius: 6px; background-color: #f8fafc;">
-            <h1 style="margin: 0; font-size: 16pt; font-weight: 800; color: #1e3a8a; letter-spacing: 1px; text-transform: uppercase;">
-              TITRE DE CONGÉ OFFICIEL
-            </h1>
+        <div style="border: 1px solid #cbd5e1; border-radius: 4px; padding: 10px; min-height: 110px; text-align: center; font-size: 8pt; display: flex; flex-direction: column; justify-content: space-between;">
+          <div>
+            <div style="font-weight: 700; color: #1e293b;">Visa Responsable Hiérarchique</div>
+            <div style="color: #166534; font-weight: 600; font-size: 7.5pt; margin-top: 2px;">✓ Avis Favorable</div>
+            <div style="font-size: 7.5pt; color: #475569;">${escapeHtml(absence.sup_nom ? `${absence.sup_prenom} ${absence.sup_nom}` : 'Chef de Service')}</div>
           </div>
-          <div style="font-size: 9pt; color: #64748b; margin-top: 6px;">
-            Document officiel délivré en application du Règlement Intérieur et de la Convention Collective SCHB GICA
-          </div>
+          <div style="font-size: 7pt; color: #94a3b8;">Signature & Date</div>
         </div>
 
-        <!-- Corps des informations collaborateur -->
-        <div style="border: 1px solid #cbd5e1; border-radius: 6px; padding: 16px; margin-bottom: 20px; background-color: #ffffff;">
-          <table style="width: 100%; border-collapse: collapse; font-size: 10pt;">
-            <tbody>
-              <tr style="border-bottom: 1px dashed #e2e8f0;">
-                <td style="padding: 8px 4px; width: 35%; color: #475569; font-weight: 600;">Matricule Employé :</td>
-                <td style="padding: 8px 4px; font-weight: 800; color: #1e3a8a; font-size: 11pt;">${escapeHtml(absence.matricule)}</td>
-              </tr>
-              <tr style="border-bottom: 1px dashed #e2e8f0;">
-                <td style="padding: 8px 4px; color: #475569; font-weight: 600;">Nom & Prénom :</td>
-                <td style="padding: 8px 4px; font-weight: 700; text-transform: uppercase;">${escapeHtml(empName)}</td>
-              </tr>
-              <tr style="border-bottom: 1px dashed #e2e8f0;">
-                <td style="padding: 8px 4px; color: #475569; font-weight: 600;">Département / Direction :</td>
-                <td style="padding: 8px 4px; font-weight: 600;">${escapeHtml(absence.departement || '—')}</td>
-              </tr>
-              <tr style="border-bottom: 1px dashed #e2e8f0;">
-                <td style="padding: 8px 4px; color: #475569; font-weight: 600;">Fonction / Poste :</td>
-                <td style="padding: 8px 4px;">${escapeHtml(absence.poste || '—')}</td>
-              </tr>
-              <tr style="border-bottom: 1px dashed #e2e8f0;">
-                <td style="padding: 8px 4px; color: #475569; font-weight: 600;">Nature du Congé :</td>
-                <td style="padding: 8px 4px; font-weight: 700; color: #0284c7;">CONGÉ ${escapeHtml(absence.type_conge ? absence.type_conge.toUpperCase() : 'ANNUEL')}</td>
-              </tr>
-              <tr style="border-bottom: 1px dashed #e2e8f0;">
-                <td style="padding: 8px 4px; color: #475569; font-weight: 600;">Durée accordée :</td>
-                <td style="padding: 8px 4px; font-weight: 800; font-size: 11pt;">${absence.duree_jours} jour(s) ouvrable(s)</td>
-              </tr>
-              <tr style="border-bottom: 1px dashed #e2e8f0;">
-                <td style="padding: 8px 4px; color: #475569; font-weight: 600;">Période d'absence :</td>
-                <td style="padding: 8px 4px; font-weight: 700;">
-                  Du <strong>${formatDateFR(absence.date_debut)}</strong> au <strong>${formatDateFR(absence.date_fin)}</strong> inclus
-                </td>
-              </tr>
-              <tr style="border-bottom: 1px dashed #e2e8f0;">
-                <td style="padding: 8px 4px; color: #475569; font-weight: 600;">Date obligatoire de reprise :</td>
-                <td style="padding: 8px 4px; font-weight: 800; color: #166534;">${dateRepriseCalc()} dès la première heure</td>
-              </tr>
-              <tr>
-                <td style="padding: 8px 4px; color: #475569; font-weight: 600;">Motif / Observation :</td>
-                <td style="padding: 8px 4px; font-style: italic; color: #64748b;">${escapeHtml(absence.motif || 'Congé réglementaire conforme')}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Mentions légales & obligations -->
-        <div style="background: #f1f5f9; border-left: 4px solid #1e3a8a; padding: 10px 14px; font-size: 8.5pt; color: #334155; margin-bottom: 30px;">
-          <strong>AVIS TRÈS IMPORTANT :</strong> L'intéressé(e) est tenu(e) de reprendre le service le jour fixé ci-dessus. Tout retard non justifié dans les quarante-huit (48) heures entraîne l'application des sanctions disciplinaires prévues par le règlement intérieur de la Société des Ciments de Hachaïchi Béjaïa SCHB.
-        </div>
-
-        <!-- Zone des Visas & Signatures officielles -->
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-top: 30px;">
-          <div style="width: 32%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; min-height: 120px; text-align: center; font-size: 8.5pt;">
-            <div style="font-weight: 700; margin-bottom: 6px; color: #1e293b;">Émargement du Salarié</div>
-            <div style="font-size: 7.5pt; color: #94a3b8; margin-top: 40px;">« Lu et approuvé »</div>
+        <div style="border: 2px solid #1F497D; border-radius: 4px; padding: 10px; min-height: 110px; text-align: center; font-size: 8pt; background-color: #f8fafc; display: flex; flex-direction: column; justify-content: space-between;">
+          <div>
+            <div style="font-weight: 800; color: #1F497D;">Direction Ressources Humaines</div>
+            <div style="color: #1e40af; font-weight: 700; font-size: 7.5pt; margin-top: 2px;">VALIDÉ & ENREGISTRÉ</div>
+            <div style="font-size: 7.5pt; color: #475569;">${escapeHtml(absence.decide_par || 'M. Amine Abritx (DRH)')}</div>
           </div>
-
-          <div style="width: 32%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; min-height: 120px; text-align: center; font-size: 8.5pt;">
-            <div style="font-weight: 700; margin-bottom: 4px; color: #1e293b;">Visa Responsable Hiérarchique</div>
-            <div style="color: #166534; font-weight: 600; font-size: 8pt; margin-top: 4px;">✓ Avis Favorable</div>
-            <div style="font-size: 8pt; color: #475569; margin-top: 2px;">${escapeHtml(absence.sup_nom ? `${absence.sup_prenom} ${absence.sup_nom}` : 'Chef de Service')}</div>
-          </div>
-
-          <div style="width: 34%; border: 2px solid #1e3a8a; border-radius: 6px; padding: 12px; min-height: 120px; text-align: center; font-size: 8.5pt; background-color: #f8fafc;">
-            <div style="font-weight: 800; margin-bottom: 4px; color: #1e3a8a;">Direction Ressources Humaines</div>
-            <div style="color: #1e40af; font-weight: 700; font-size: 8pt; margin-top: 4px;">VALIDÉ & ENREGISTRÉ</div>
-            <div style="font-size: 8pt; color: #475569; margin-top: 2px;">${escapeHtml(absence.decide_par || 'M. Amine Abritx (DRH)')}</div>
-            <div style="margin-top: 15px; font-size: 7pt; color: #94a3b8; letter-spacing: 1px;">CACHET OFFICIEL SCHB</div>
-          </div>
-        </div>
-
-        <!-- Pied de page officiel -->
-        <div style="margin-top: 40px; padding-top: 12px; border-top: 1px solid #e2e8f0; text-align: center; font-size: 7.5pt; color: #94a3b8;">
-          SCHB Béjaïa · Filiale du Groupe Industriel des Ciments d'Algérie (GICA) · Route des Ciments, Béjaïa, Algérie · Système RH 2.0
+          <div style="font-size: 6.5pt; color: #94a3b8; letter-spacing: 0.5px;">CACHET OFFICIEL SCHB</div>
         </div>
       </div>
     `;
 
-    document.body.appendChild(overlay);
-
-    // Déclenchement de l'impression PDF
-    window.print();
-
-    // Nettoyage après impression
-    window.addEventListener('afterprint', () => {
-      overlay.remove();
-    }, { once: true });
-    setTimeout(() => {
-      if (document.getElementById('printable-titre-conge-overlay')) {
-        overlay.remove();
-      }
-    }, 4000);
+    printOfficialDocument(titreBodyHtml, {
+      documentTitle: `Titre_Conge_${absence.matricule}_${absence.id}`,
+      ref: refDoc,
+      date: dateEmission,
+      departement: 'DIRECTION DES RESSOURCES HUMAINES'
+    });
   },
 
   async processDecision(id, matricule, duree, typeConge, statut, empName = '', empEmail = '') {

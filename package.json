@@ -1,16 +1,24 @@
 {
   "name": "rh",
-  "version": "0.0.0",
+  "version": "2.1.0",
+  "description": "Console de lancement et de supervision du portail RH SCHB Gica",
+  "author": "SCHB Gica",
   "private": true,
   "type": "module",
+  "main": "electron/main.js",
   "scripts": {
     "dev": "vite --port 8082 --host",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "console": "node launcher.js --start",
+    "app": "electron .",
+    "exe": "electron-builder --win portable"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.53.1",
-    "vite": "^6.0.0"
+    "electron": "^38.8.6",
+    "electron-builder": "^26.0.12",
+    "vite": "^5.4.21"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -24,5 +32,32 @@
     "nodemailer": "^10.2.1",
     "sqlite3": "^6.0.1",
     "xlsx": "^0.18.5"
+  },
+  "build": {
+    "appId": "dz.gica.schb.console",
+    "productName": "Console GICA RH",
+    "directories": {
+      "output": "release",
+      "buildResources": "electron"
+    },
+    "files": [
+      "electron/**/*",
+      "launcher.js",
+      "launcher/ui.html",
+      "package.json",
+      "!node_modules/sqlite3/**",
+      "!node_modules/**/{test,tests,example,examples,docs,doc}/**",
+      "!**/*.md"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        "portable"
+      ]
+    },
+    "portable": {
+      "artifactName": "Console-GICA-RH-${version}.exe"
+    }
   }
 }

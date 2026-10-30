@@ -49,4 +49,16 @@ db/.jwt_secret
 *.tar.gz
 *.rar
 *.7z
+*.db
+doc_converted.*
+doc_extracted.*
+doc_full.*
+extracted_docx/
+scratch_*
+scratch/
 
+
+# Console de lancement : artefacts générés
+release/
+screenshots/
+/Console-GICA-RH.exe

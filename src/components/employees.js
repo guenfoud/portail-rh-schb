@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { openModal, closeModal, renderTimePicker, getTimePickerValue, toast, confirmDialog } from '../main.js';
+import { openModal, closeModal, renderTimePicker, getTimePickerValue, toast, confirmDialog, getCurrentUser } from '../main.js';
 import { AbsencesComponent } from './absences.js';
 import { RecuperationComponent } from './recuperation.js';
 import { escapeHtml, formatDateFR, exportToExcel, resizeImageToDataUrl, fileToDataUrl } from '../utils.js';
@@ -38,10 +38,11 @@ export const EmployeesComponent = {
               Exporter
             </button>
 
+            ${getCurrentUser()?.role === 'hr' ? `
             <button class="btn btn-primary" id="btn-add-employee">
               <i data-lucide="user-plus"></i>
               Ajouter Employé
-            </button>
+            </button>` : ''}
           </div>
         </div>
 
@@ -83,6 +84,10 @@ export const EmployeesComponent = {
   },
 
   renderTableRows(employees) {
+    // Seule la DRH peut créer/modifier/désactiver un compte : les responsables ont un accès
+    // en lecture à l'annuaire (le serveur refuse toute écriture depuis un autre rôle).
+    const canManage = getCurrentUser()?.role === 'hr';
+
     if (employees.length === 0) {
       return `
         <tr>
@@ -137,12 +142,13 @@ export const EmployeesComponent = {
               <button class="btn-icon btn-detail" title="Fiche détaillée" data-matricule="${escapeHtml(emp.matricule)}">
                 <i data-lucide="eye"></i>
               </button>
+              ${canManage ? `
               <button class="btn-icon btn-edit" title="Modifier" data-matricule="${escapeHtml(emp.matricule)}">
                 <i data-lucide="edit-2"></i>
               </button>
               <button class="btn-icon btn-delete" style="color: var(--color-danger);" title="Supprimer" data-matricule="${escapeHtml(emp.matricule)}">
                 <i data-lucide="trash-2"></i>
-              </button>
+              </button>` : ''}
             </div>
           </td>
         </tr>
@@ -265,7 +271,11 @@ export const EmployeesComponent = {
     });
   },
 
-  async showEmployeeFormModal(matricule = null) {
+  async  showEmployeeFormModal(matricule = null) {
+    if (getCurrentUser()?.role !== 'hr') {
+      toast("Seule la Direction des Ressources Humaines peut modifier une fiche employé.", 'warning');
+      return;
+    }
     const isEdit = matricule !== null;
     let emp = null;
     if (isEdit) {
@@ -381,7 +391,8 @@ export const EmployeesComponent = {
             <div class="form-group">
               <label for="form-pwd">Mot de passe${isEdit ? '' : '*'}</label>
               <input type="password" id="form-pwd" class="form-control" autocomplete="new-password"
-                     placeholder="${isEdit ? 'Laisser vide pour conserver le mot de passe actuel' : 'ex: 1234'}"
+                     minlength="8"
+                     placeholder="${isEdit ? 'Laisser vide pour conserver le mot de passe actuel' : '8 caractères minimum'}"
                      ${isEdit ? '' : 'required'} value="">
               ${isEdit ? `<span style="font-size: 0.75rem; color: var(--text-muted);">Le mot de passe actuel est stocké de façon sécurisée (haché) et ne peut pas être affiché. Ne renseignez ce champ que pour le changer.</span>` : ''}
             </div>
@@ -476,7 +487,13 @@ export const EmployeesComponent = {
         }
 
         try {
-          await api.saveEmployee(employeeData);
+          const res = await api.saveEmployee(employeeData);
+          if (res && res.temporary_password) {
+            await confirmDialog(
+              `Le compte a été créé sans mot de passe saisi.<br><br>Mot de passe temporaire : <strong style="font-family: monospace; font-size: 1rem;">${escapeHtml(res.temporary_password)}</strong><br><br>Communiquez-le au collaborateur par un canal sûr ; il devra le changer après connexion.`, 
+              { title: 'Compte créé — mot de passe temporaire', danger: false }
+            );
+          }
           toast(`Employé ${isEdit ? 'mis à jour' : 'créé'} avec succès.`, 'success');
 
           // Rafraîchir
@@ -609,6 +626,10 @@ export const EmployeesComponent = {
   },
 
   async confirmDeleteEmployee(matricule) {
+    if (getCurrentUser()?.role !== 'hr') {
+      toast("Seule la Direction des Ressources Humaines peut désactiver un compte.", 'warning');
+      return;
+    }
     try {
       const emp = await api.getEmployee(matricule);
       if (!emp) return;

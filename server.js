@@ -18,6 +18,8 @@ const PORT = 8081;
 app.use(cors());
 // Limite relevée par rapport au défaut (100kb) pour accepter les photos/documents en base64
 app.use(express.json({ limit: '8mb' }));
+// Nécessaire pour le formulaire de confirmation des liens de décision 1-clic
+app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 
 // En-têtes de sécurité de base
 app.use((req, res, next) => {
@@ -72,24 +74,33 @@ function logAudit(req, action, cible, details) {
 
 // --- CONFIGURATION SMTP POUR L'ENVOI D'EMAILS DE VALIDATION ---
 // Serveur : mail.dz-com.com, Compte : it@dz-com.com
+// Aucun identifiant SMTP n'est codé en dur : tout provient de l'environnement (.env).
+// Si la configuration est incomplète, l'envoi d'emails est désactivé avec un avertissement
+// explicite, plutôt que d'utiliser silencieusement un compte par défaut.
 const smtpConfig = {
-  host: process.env.SMTP_HOST || 'mail.dz-com.com',
+  host: process.env.SMTP_HOST || null,
   port: parseInt(process.env.SMTP_PORT || '587', 10),
   secure: process.env.SMTP_SECURE === 'true' || process.env.SMTP_PORT === '465',
   auth: {
-    user: process.env.SMTP_USER || 'it@dz-com.com',
-    pass: process.env.SMTP_PASS || 'aze@2023'
+    user: process.env.SMTP_USER || null,
+    pass: process.env.SMTP_PASS || null
   },
   tls: {
-    rejectUnauthorized: false
+    // Un serveur SMTP interne à certificat auto-signé nécessite SMTP_TLS_INSECURE=true.
+    rejectUnauthorized: process.env.SMTP_TLS_INSECURE !== 'true'
   }
 };
 
-const mailTransporter = nodemailer.createTransport(smtpConfig);
-console.log(`[SMTP] Service de messagerie configuré : ${smtpConfig.host}:${smtpConfig.port} (Expéditeur: ${smtpConfig.auth.user})`);
+const smtpConfigured = Boolean(smtpConfig.host && smtpConfig.auth.user && smtpConfig.auth.pass);
+const mailTransporter = smtpConfigured ? nodemailer.createTransport(smtpConfig) : null;
+if (smtpConfigured) {
+  console.log(`[SMTP] Service de messagerie configuré : ${smtpConfig.host}:${smtpConfig.port}`);
+} else {
+  console.warn("[SMTP] Configuration incomplète (SMTP_HOST / SMTP_USER / SMTP_PASS) : les emails sont désactivés. Aucun identifiant par défaut n'est utilisé.");
+}
 
 async function sendSmtpEmail({ to, subject, text, html }) {
-  if (!to) return false;
+  if (!to || !mailTransporter) return false;
   try {
     const adminCopy = smtpConfig.auth.user; // 'it@dz-com.com'
     const mailOptions = {
@@ -185,7 +196,7 @@ function generateQuickDecisionEmailHtml({
   rejectUrl,
   deciderRoleLabel = 'Responsable Hiérarchique'
 }) {
-  const adminCopy = smtpConfig.auth.user;
+  const adminCopy = smtpConfig.auth.user || 'no-reply@localhost';
   const conflictHtml = conflicts.length > 0 ? `
     <div style="margin: 18px 0; padding: 14px 16px; background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f59e0b; border-radius: 6px;">
       <div style="color: #92400e; font-weight: 700; font-size: 0.92rem;">
@@ -264,7 +275,7 @@ function generateQuickDecisionEmailHtml({
             </a>
           </div>
           <div style="font-size: 0.74rem; color: #64748b; margin-top: 10px;">
-            Ce clic sécurisé enregistre instantanément votre décision officielle sans nécessiter de mot de passe.
+            Vous serez invité à confirmer votre décision sur une page sécurisée, sans mot de passe. Chaque lien est à usage unique et valable 72 heures.
           </div>
         </div>
 
@@ -293,7 +304,7 @@ function generateApprovalEmailHtml({
   drhDecidePar,
   dateDecision
 }) {
-  const adminCopy = smtpConfig.auth.user;
+  const adminCopy = smtpConfig.auth.user || 'no-reply@localhost';
   return `
     <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 620px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden; background: #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
       <div style="background: linear-gradient(135deg, #065f46 0%, #059669 100%); color: #ffffff; padding: 22px 24px;">
@@ -642,6 +653,31 @@ function requireRole(...roles) {
   };
 }
 
+// --- JETONS DE DÉCISION 1-CLIC (usage unique) ---
+// Chaque lien envoyé par email porte un identifiant `jti` enregistré en base : la décision
+// ne peut être appliquée qu'une seule fois, et la durée de vie est courte.
+const QUICK_DECISION_TTL_HOURS = 72;
+
+function getDrhMatricule() {
+  return new Promise((resolve) => {
+    db.get(
+      "SELECT matricule FROM employees WHERE role = 'hr' AND actif = 1 ORDER BY matricule LIMIT 1",
+      [],
+      (err, row) => resolve(err || !row ? null : row.matricule)
+    );
+  });
+}
+
+// Génération purement cryptographique : le jeton est enregistré au moment de la décision
+// (clé primaire sur `jti`), ce qui rend la consommation atomique et sans dépendance à l'envoi d'email.
+function createQuickDecisionToken({ absenceId, action, deciderMatricule, role }) {
+  return jwt.sign(
+    { absenceId, action, deciderMatricule, role, jti: randomUUID() },
+    JWT_SECRET,
+    { expiresIn: `${QUICK_DECISION_TTL_HOURS}h` }
+  );
+}
+
 // --- LIMITATION DES TENTATIVES DE CONNEXION (anti brute-force) ---
 const loginAttempts = new Map(); // clé "matricule_ip" -> { count, firstAttemptAt }
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
@@ -769,8 +805,52 @@ app.post('/api/login', (req, res) => {
       horaire_debut: user.horaire_debut,
       horaire_fin: user.horaire_fin,
       SuperieurMatricule: user.SuperieurMatricule || null,
-      Email: user.Email || null
+      Email: user.Email || null,
+      must_change_password: !!user.must_change_password
     });
+  });
+});
+
+// Changement de mot de passe par l'utilisateur lui-même (première connexion ou volontaire)
+app.post('/api/me/password', authenticate, (req, res) => {
+  const { current_password, new_password } = req.body || {};
+  const nextPassword = String(new_password || '');
+
+  if (nextPassword.length < 8) {
+    return res.status(400).json({ error: "Le nouveau mot de passe doit contenir au moins 8 caractères." });
+  }
+  if (nextPassword === req.user.matricule) {
+    return res.status(400).json({ error: "Le mot de passe ne peut pas être égal au matricule." });
+  }
+
+  db.get("SELECT matricule, password FROM employees WHERE matricule = ? AND actif = 1", [req.user.matricule], async (err, user) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!user) return res.status(401).json({ error: "Compte introuvable ou désactivé." });
+
+    let match = false;
+    try {
+      match = await bcrypt.compare(String(current_password || ''), user.password);
+    } catch (e) {
+      match = false;
+    }
+    if (!match) {
+      return res.status(400).json({ error: "Mot de passe actuel incorrect." });
+    }
+
+    try {
+      const hash = await bcrypt.hash(nextPassword, 10);
+      db.run(
+        "UPDATE employees SET password = ?, must_change_password = 0 WHERE matricule = ?",
+        [hash, req.user.matricule],
+        function(errUp) {
+          if (errUp) return res.status(500).json({ error: errUp.message });
+          logAudit(req, 'Changement de mot de passe', req.user.matricule);
+          res.json({ success: true });
+        }
+      );
+    } catch (hashErr) {
+      res.status(500).json({ error: "Erreur lors du traitement du mot de passe." });
+    }
   });
 });
 
@@ -812,8 +892,10 @@ app.get('/api/employees/:matricule', authenticate, (req, res) => {
   });
 });
 
-// POST Employé (Créer ou modifier) — réservé à hr / supervisor (cohérent avec la navigation existante)
-app.post('/api/employees', authenticate, requireRole('hr', 'supervisor'), (req, res) => {
+// POST Employé (Créer ou modifier) — réservé à la DRH.
+// La gestion des comptes, des rôles et des soldes ne doit jamais être déléguée à un responsable :
+// sinon un superviseur peut se créer un compte DRH et contourner tout le circuit de validation.
+app.post('/api/employees', authenticate, requireRole('hr'), (req, res) => {
   const { matricule, nom, prenom, departement, poste, date_embauche, horaire_debut, horaire_fin, role, solde_recuperation, solde_conge, password, cycle_travail, cycle_repos, cycle_debut, photo, email, Email } = req.body;
   const cleanEmail = (email || Email || '').trim() || null;
 
@@ -823,9 +905,24 @@ app.post('/api/employees', authenticate, requireRole('hr', 'supervisor'), (req, 
   if (role && !['employee', 'supervisor', 'hr'].includes(role)) {
     return res.status(400).json({ error: "Rôle invalide." });
   }
+  // Un utilisateur ne peut pas modifier son propre rôle (protection contre l'auto-promotion
+  // et contre le verrouillage accidentel de la dernière DRH).
+  if (matricule === req.user.matricule && role && role !== req.user.role) {
+    return res.status(400).json({ error: "Vous ne pouvez pas modifier votre propre rôle." });
+  }
   // Limite raisonnable pour une photo encodée en base64 (~1.4 Mo de données brutes)
   if (photo && photo.length > 2_000_000) {
     return res.status(400).json({ error: "La photo est trop volumineuse (max ~1.5 Mo)." });
+  }
+  // Politique minimale : pas de mot de passe trivial, jamais égal au matricule.
+  if (password && String(password).trim()) {
+    const pwdCandidate = String(password).trim();
+    if (pwdCandidate.length < 8) {
+      return res.status(400).json({ error: "Le mot de passe doit contenir au moins 8 caractères." });
+    }
+    if (pwdCandidate === matricule) {
+      return res.status(400).json({ error: "Le mot de passe ne peut pas être égal au matricule." });
+    }
   }
 
   // Vérifier si l'employé existe déjà
@@ -847,7 +944,8 @@ app.post('/api/employees', authenticate, requireRole('hr', 'supervisor'), (req, 
 
         if (password && String(password).trim()) {
           const hash = await bcrypt.hash(String(password).trim(), 10);
-          sql += `, password = ?`;
+          // Un mot de passe réinitialisé par la DRH doit être changé à la connexion suivante.
+          sql += `, password = ?, must_change_password = 1`;
           params.push(hash);
         }
         if (photo !== undefined) {
@@ -863,18 +961,25 @@ app.post('/api/employees', authenticate, requireRole('hr', 'supervisor'), (req, 
           res.json({ success: true, action: 'updated' });
         });
       } else {
-        // Insert — mot de passe par défaut = matricule si non fourni, toujours haché avant stockage
-        const pwdPlain = (password && String(password).trim()) || matricule;
+        // Insert — jamais de mot de passe par défaut égal au matricule (public sur les badges).
+        // Si la DRH n'en saisit pas, un mot de passe temporaire aléatoire est généré et
+        // renvoyé une seule fois dans la réponse, pour transmission hors bande.
+        const providedPassword = password && String(password).trim();
+        const pwdPlain = providedPassword || randomBytes(9).toString('base64url');
         const hash = await bcrypt.hash(pwdPlain, 10);
 
         db.run(`INSERT INTO employees
-          (matricule, nom, prenom, departement, poste, date_embauche, solde_recuperation, solde_conge, horaire_debut, horaire_fin, role, password, cycle_travail, cycle_repos, cycle_debut, actif, photo, last_accrual_date, Email)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+          (matricule, nom, prenom, departement, poste, date_embauche, solde_recuperation, solde_conge, horaire_debut, horaire_fin, role, password, cycle_travail, cycle_repos, cycle_debut, actif, photo, last_accrual_date, Email, must_change_password)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1)`,
           [matricule, nom, prenom, departement, poste, date_embauche, solde_recuperation || 0, solde_conge || 30.0, horaire_debut, horaire_fin, role || 'employee', hash, cTravail, cRepos, cDebut, photo || null, date_embauche, cleanEmail],
           function(err) {
             if (err) return res.status(500).json({ error: err.message });
             logAudit(req, 'Création employé', matricule, `${prenom} ${nom}`);
-            res.json({ success: true, action: 'created' });
+            res.json({
+              success: true,
+              action: 'created',
+              ...(providedPassword ? {} : { temporary_password: pwdPlain })
+            });
           }
         );
       }
@@ -884,8 +989,11 @@ app.post('/api/employees', authenticate, requireRole('hr', 'supervisor'), (req, 
   });
 });
 
-// DELETE Employé (Désactiver actif = 0)
-app.delete('/api/employees/:matricule', authenticate, requireRole('hr', 'supervisor'), (req, res) => {
+// DELETE Employé (Désactiver actif = 0) — réservé à la DRH
+app.delete('/api/employees/:matricule', authenticate, requireRole('hr'), (req, res) => {
+  if (req.params.matricule === req.user.matricule) {
+    return res.status(400).json({ error: "Vous ne pouvez pas désactiver votre propre compte." });
+  }
   db.run("UPDATE employees SET actif = 0 WHERE matricule = ?", [req.params.matricule], function(err) {
     if (err) return res.status(500).json({ error: err.message });
     logAudit(req, 'Suppression employé', req.params.matricule);
@@ -1098,7 +1206,7 @@ app.delete('/api/documents/:id', authenticate, requireRole('hr', 'supervisor'), 
 
 // 3. GET Pointages (réservé à hr / supervisor, comme la page correspondante)
 app.get('/api/pointages', authenticate, requireRole('hr', 'supervisor'), (req, res) => {
-  const { date, matricule } = req.query;
+  const { date, matricule, date_debut, date_fin, matricules } = req.query;
   let sql = "SELECT * FROM pointages WHERE 1=1";
   const params = [];
 
@@ -1110,6 +1218,28 @@ app.get('/api/pointages', authenticate, requireRole('hr', 'supervisor'), (req, r
     sql += " AND matricule = ?";
     params.push(matricule);
   }
+  // Filtres de plage utilisés par la saisie groupée (dates stockées en VARCHAR AAAA-MM-JJ)
+  if (date_debut) {
+    sql += " AND date >= ?";
+    params.push(date_debut);
+  }
+  if (date_fin) {
+    sql += " AND date <= ?";
+    params.push(date_fin);
+  }
+  if (matricules) {
+    const list = String(matricules).split(',').map(m => m.trim()).filter(Boolean).slice(0, 300);
+    if (list.length > 0) {
+      sql += ` AND matricule IN (${list.map(() => '?').join(',')})`;
+      params.push(...list);
+    }
+  }
+
+  // Lecture alignée sur l'écriture : un responsable ne consulte que son département.
+  if (req.user.role === 'supervisor') {
+    sql += " AND matricule IN (SELECT matricule FROM employees WHERE departement = (SELECT departement FROM employees WHERE matricule = ?))";
+    params.push(req.user.matricule);
+  }
 
   db.all(sql, params, (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
@@ -1118,13 +1248,24 @@ app.get('/api/pointages', authenticate, requireRole('hr', 'supervisor'), (req, r
 });
 
 // POST Pointages (Sauvegarder lot de pointages importés ou un seul)
-app.post('/api/pointages', authenticate, requireRole('hr', 'supervisor', 'admin', 'employee'), async (req, res) => {
+// Réservé à la DRH et aux responsables : un collaborateur ne peut pas écrire (ni antidater)
+// les heures d'un collègue, ce qui reviendrait à modifier ses heures supplémentaires et ses primes.
+// Pour son propre pointage, un collaborateur passe par /api/terminal/punch.
+app.post('/api/pointages', authenticate, requireRole('hr', 'supervisor'), async (req, res) => {
   const list = Array.isArray(req.body) ? req.body : [req.body];
   const config = await getConfig();
 
   // Récupérer tous les employés actifs pour accélérer les calculs
   db.all("SELECT * FROM employees WHERE actif = 1", [], (err, employees) => {
     if (err) return res.status(500).json({ error: err.message });
+
+    // Périmètre : un responsable ne saisit que les pointages de son département.
+    const actor = employees.find(e => e.matricule === req.user.matricule);
+    if (req.user.role === 'supervisor' && !actor) {
+      return res.status(403).json({ error: "Accès refusé : votre fiche employé est introuvable." });
+    }
+    const isOutsideScope = (emp) => req.user.role === 'supervisor' && !!actor && emp.departement !== actor.departement;
+    let savedCount = 0;
 
     db.serialize(() => {
       const stmt = db.prepare(`INSERT INTO pointages
@@ -1139,6 +1280,8 @@ app.post('/api/pointages', authenticate, requireRole('hr', 'supervisor', 'admin'
       list.forEach(p => {
         const emp = employees.find(e => e.matricule === p.matricule);
         if (!emp) return; // Sauter si l'employé n'existe pas
+        if (isOutsideScope(emp)) return; // Hors périmètre du responsable
+        savedCount++;
 
         // Recalculer les statistiques de pointage côté serveur pour plus de sécurité
         const stats = calculatePointageStats(emp, p.date, p.heureEntree, p.heureSortie, config);
@@ -1165,17 +1308,36 @@ app.post('/api/pointages', authenticate, requireRole('hr', 'supervisor', 'admin'
 
       stmt.finalize((err) => {
         if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true, count: list.length });
+        if (savedCount > 0) {
+          logAudit(req, 'Saisie / correction de pointages', null, `${savedCount} pointage(s) enregistré(s)`);
+        }
+        res.json({ success: true, count: savedCount });
       });
     });
   });
 });
 
-// DELETE Pointage
-app.delete('/api/pointages/:id', authenticate, requireRole('hr', 'supervisor', 'admin', 'employee'), (req, res) => {
-  db.run("DELETE FROM pointages WHERE id = ?", [req.params.id], function(err) {
+// DELETE Pointage — DRH, ou responsable pour son propre département uniquement
+app.delete('/api/pointages/:id', authenticate, requireRole('hr', 'supervisor'), (req, res) => {
+  const sql = `
+    SELECT p.matricule,
+           e.departement AS emp_departement,
+           (SELECT departement FROM employees WHERE matricule = ?) AS actor_departement
+    FROM pointages p
+    LEFT JOIN employees e ON p.matricule = e.matricule
+    WHERE p.id = ?
+  `;
+  db.get(sql, [req.user.matricule, req.params.id], (err, row) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json({ success: true });
+    if (!row) return res.status(404).json({ error: "Pointage introuvable." });
+    if (req.user.role === 'supervisor' && row.emp_departement !== row.actor_departement) {
+      return res.status(403).json({ error: "Accès refusé : ce pointage ne relève pas de votre département." });
+    }
+    db.run("DELETE FROM pointages WHERE id = ?", [req.params.id], function(err2) {
+      if (err2) return res.status(500).json({ error: err2.message });
+      logAudit(req, 'Suppression de pointage', row.matricule, `Pointage ${req.params.id}`);
+      res.json({ success: true });
+    });
   });
 });
 
@@ -1188,6 +1350,15 @@ app.get('/api/recuperations', authenticate, (req, res) => {
 
   let sql = "SELECT * FROM recuperations WHERE 1=1";
   const params = [];
+
+  // Un responsable ne voit que son périmètre (lui-même et son département).
+  if (req.user.role === 'supervisor') {
+    sql += ` AND matricule IN (
+      SELECT matricule FROM employees
+      WHERE matricule = ? OR departement = (SELECT departement FROM employees WHERE matricule = ?)
+    )`;
+    params.push(req.user.matricule, req.user.matricule);
+  }
 
   if (matricule) {
     sql += " AND matricule = ?";
@@ -1269,6 +1440,16 @@ app.post('/api/recuperations', authenticate, (req, res) => {
       if (err) return res.status(500).json({ error: err.message });
       if (!oldRequest) return res.status(404).json({ error: "Demande introuvable." });
 
+      // Périmètre : un responsable ne statue que sur les demandes de son département.
+      db.get(`SELECT e.departement AS emp_departement,
+                     (SELECT departement FROM employees WHERE matricule = ?) AS actor_departement
+              FROM employees e WHERE e.matricule = ?`,
+        [req.user.matricule, oldRequest.matricule], (errScope, scope) => {
+          if (errScope) return res.status(500).json({ error: errScope.message });
+          if (req.user.role === 'supervisor' && (!scope || scope.emp_departement !== scope.actor_departement)) {
+            return res.status(403).json({ error: "Accès refusé : cette demande ne relève pas de votre département." });
+          }
+
       db.serialize(() => {
         db.run(`UPDATE recuperations SET
           statut = ?, decide_par = ?, date_decision = ?
@@ -1300,6 +1481,7 @@ app.post('/api/recuperations', authenticate, (req, res) => {
           }
         );
       });
+      });
     });
   }
 });
@@ -1314,6 +1496,23 @@ app.post('/api/recuperations/:id/supervisor-decision', authenticate, requireRole
   db.get("SELECT * FROM recuperations WHERE id = ?", [req.params.id], (err, reqRow) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!reqRow) return res.status(404).json({ error: "Demande introuvable." });
+
+    // Périmètre : responsable du collaborateur, même département, ou intérimaire actif.
+    db.get(`SELECT e.SuperieurMatricule, e.departement AS emp_departement,
+                   (SELECT departement FROM employees WHERE matricule = ?) AS actor_departement,
+                   (SELECT COUNT(*) FROM interims WHERE matricule_interimaire = ? AND matricule_titulaire = e.SuperieurMatricule
+                      AND statut = 'Actif' AND CURDATE() BETWEEN date_debut AND date_fin) AS is_interim
+            FROM employees e WHERE e.matricule = ?`,
+      [req.user.matricule, req.user.matricule, reqRow.matricule], (errScope, scope) => {
+        if (errScope) return res.status(500).json({ error: errScope.message });
+        const inScope = scope && (
+          scope.SuperieurMatricule === req.user.matricule ||
+          scope.emp_departement === scope.actor_departement ||
+          scope.is_interim > 0
+        );
+        if (!inScope) {
+          return res.status(403).json({ error: "Accès refusé : cette demande ne relève pas de votre périmètre." });
+        }
 
     db.run(
       `UPDATE recuperations SET statut_superviseur = ?, decide_par_superviseur = ?, date_decision_superviseur = ? WHERE id = ?`,
@@ -1335,6 +1534,7 @@ app.post('/api/recuperations/:id/supervisor-decision', authenticate, requireRole
         res.json({ success: true });
       }
     );
+      });
   });
 });
 
@@ -1499,9 +1699,9 @@ app.post('/api/absences', authenticate, (req, res) => {
                       : supEmail;
                     const targetNom = activeInterim ? `${activeInterim.int_prenom} ${activeInterim.int_nom}` : supNom;
 
-                    // Générer les jetons JWT sécurisés pour décision 1-clic par email
-                    const approveToken = jwt.sign({ absenceId: newId, action: 'approve', deciderMatricule: targetDecider, role: 'supervisor' }, JWT_SECRET, { expiresIn: '14d' });
-                    const rejectToken = jwt.sign({ absenceId: newId, action: 'reject', deciderMatricule: targetDecider, role: 'supervisor' }, JWT_SECRET, { expiresIn: '14d' });
+                    // Jetons de décision à usage unique (72 h)
+                    const approveToken = await createQuickDecisionToken({ absenceId: newId, action: 'approve', deciderMatricule: targetDecider, role: 'supervisor' });
+                    const rejectToken = await createQuickDecisionToken({ absenceId: newId, action: 'reject', deciderMatricule: targetDecider, role: 'supervisor' });
                     const approveUrl = `${backendBase}/api/absences/quick-decision?token=${approveToken}`;
                     const rejectUrl = `${backendBase}/api/absences/quick-decision?token=${rejectToken}`;
 
@@ -1594,9 +1794,14 @@ app.post('/api/absences', authenticate, (req, res) => {
       }
     );
   } else {
-    // --- ÉTAPE 3 : VALIDATION FINALE PAR LA DRH (ou Décision Superviseur) ---
-    if (req.user.role !== 'hr' && req.user.role !== 'supervisor') {
-      return res.status(403).json({ error: "Seuls RH ou Superviseur peuvent approuver/refuser une demande." });
+    // --- ÉTAPE 3 : DÉCISION FINALE — réservée à la DRH ---
+    // L'avis du responsable (étape 2) est consultatif et passe par /api/absences/:id/supervisor-decision.
+    // Seule la DRH peut clôturer une demande et débiter le solde de congé.
+    if (req.user.role !== 'hr') {
+      return res.status(403).json({ error: "Seule la Direction des Ressources Humaines peut prendre la décision finale sur une demande de congé." });
+    }
+    if (!['Approuvé', 'Refusé'].includes(statut)) {
+      return res.status(400).json({ error: "Statut de décision invalide." });
     }
 
     db.get(`SELECT a.*, e.nom, e.prenom, e.departement, e.poste, e.Email, e.solde_conge, e.SuperieurMatricule
@@ -1609,7 +1814,9 @@ app.post('/api/absences', authenticate, (req, res) => {
       db.get("SELECT matricule, nom, prenom FROM employees WHERE matricule = ?", [req.user.matricule], (errDrh, drhUser) => {
         const today = new Date().toISOString().split('T')[0];
         const drhFullName = drhUser ? `${drhUser.prenom} ${drhUser.nom}` : req.user.matricule;
-        const drhDecidePar = decide_par || `${drhFullName} (DRH)`.trim();
+        // Signature toujours dérivée du compte authentifié (jamais du corps de la requête),
+        // afin qu'une décision ne puisse pas être signée au nom d'un tiers.
+        const drhDecidePar = `${drhFullName} (DRH)`;
         const drhDateDecision = date_decision || today;
 
         db.run(`UPDATE absences SET
@@ -1726,7 +1933,11 @@ app.post('/api/absences/:id/supervisor-decision', authenticate, async (req, res)
       WHERE matricule_interimaire = ? AND matricule_titulaire = ? AND statut = 'Actif' AND CURDATE() BETWEEN date_debut AND date_fin
     `;
     db.get(checkAuthSql, [req.user.matricule, reqRow.SuperieurMatricule], (errAuth, isInterim) => {
-      const isAuthorized = (req.user.role === 'hr' || req.user.role === 'supervisor' || !!isInterim);
+      // Périmètre strict : la DRH, le responsable hiérarchique titulaire, ou son intérimaire actif.
+      // Un responsable d'un autre service ne peut ni approuver ni refuser cette demande.
+      const isTitulaire = !!reqRow.SuperieurMatricule && reqRow.SuperieurMatricule === req.user.matricule;
+      const isSelf = reqRow.matricule === req.user.matricule;
+      const isAuthorized = !isSelf && (req.user.role === 'hr' || isTitulaire || !!isInterim);
       if (!isAuthorized) {
         return res.status(403).json({ error: "Vous n'avez pas l'autorisation pour valider cette demande." });
       }
@@ -1751,8 +1962,10 @@ app.post('/api/absences/:id/supervisor-decision', authenticate, async (req, res)
                 // 1. Notification & Email à la DRH (matricule '1002') avec boutons 1-CLIC sécurisés
                 const roleMention = isActingAsInterim ? `le responsable par intérim ${userNom} (remplaçant ${titNom} en congé)` : `le responsable hiérarchique ${userNom}`;
                 const backendBase = process.env.SERVER_URL || `http://${req.hostname || 'localhost'}:${PORT}`;
-                const drhApproveToken = jwt.sign({ absenceId: req.params.id, action: 'approve', deciderMatricule: '1002', role: 'hr' }, JWT_SECRET, { expiresIn: '14d' });
-                const drhRejectToken = jwt.sign({ absenceId: req.params.id, action: 'reject', deciderMatricule: '1002', role: 'hr' }, JWT_SECRET, { expiresIn: '14d' });
+                // Le signataire est dérivé du compte DRH réel, plus d'un matricule codé en dur.
+                const drhMatricule = await getDrhMatricule();
+                const drhApproveToken = await createQuickDecisionToken({ absenceId: req.params.id, action: 'approve', deciderMatricule: drhMatricule, role: 'hr' });
+                const drhRejectToken = await createQuickDecisionToken({ absenceId: req.params.id, action: 'reject', deciderMatricule: drhMatricule, role: 'hr' });
                 const drhApproveUrl = `${backendBase}/api/absences/quick-decision?token=${drhApproveToken}`;
                 const drhRejectUrl = `${backendBase}/api/absences/quick-decision?token=${drhRejectToken}`;
 
@@ -1821,16 +2034,47 @@ app.post('/api/absences/:id/supervisor-decision', authenticate, async (req, res)
   });
 });
 
-// Justificatif d'une demande de congé (image/PDF encodé en base64)
+// Justificatif d'une demande de congé (image/PDF encodé en base64).
+// Donnée de santé : accès limité au collaborateur concerné, à la DRH, à son responsable
+// direct et à l'intérimaire actif de ce responsable — jamais à un autre responsable.
 app.get('/api/absences/:id/justificatif', authenticate, (req, res) => {
+  const sendJustificatif = (row) => {
+    if (!row.justificatif) return res.status(404).json({ error: "Aucun justificatif joint." });
+    res.json({ justificatif: row.justificatif });
+  };
+
   db.get("SELECT matricule, justificatif FROM absences WHERE id = ?", [req.params.id], (err, row) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!row) return res.status(404).json({ error: "Demande introuvable." });
-    if (req.user.role === 'employee' && req.user.matricule !== row.matricule) {
+
+    if (req.user.matricule === row.matricule || req.user.role === 'hr') {
+      return sendJustificatif(row);
+    }
+
+    if (req.user.role === 'employee') {
       return res.status(403).json({ error: "Accès non autorisé." });
     }
-    if (!row.justificatif) return res.status(404).json({ error: "Aucun justificatif joint." });
-    res.json({ justificatif: row.justificatif });
+
+    db.get("SELECT SuperieurMatricule FROM employees WHERE matricule = ?", [row.matricule], (errEmp, empRow) => {
+      if (errEmp) return res.status(500).json({ error: errEmp.message });
+      const supMatricule = empRow?.SuperieurMatricule || null;
+      if (supMatricule && supMatricule === req.user.matricule) {
+        return sendJustificatif(row);
+      }
+      db.get(
+        `SELECT 1 AS ok FROM interims
+         WHERE matricule_interimaire = ? AND matricule_titulaire = ?
+           AND statut = 'Actif' AND CURDATE() BETWEEN date_debut AND date_fin`,
+        [req.user.matricule, supMatricule],
+        (errInt, interimRow) => {
+          if (errInt) return res.status(500).json({ error: errInt.message });
+          if (!interimRow) {
+            return res.status(403).json({ error: "Accès non autorisé à ce justificatif médical." });
+          }
+          return sendJustificatif(row);
+        }
+      );
+    });
   });
 });
 
@@ -1891,14 +2135,14 @@ function renderDecisionPage({ success, isApprove = true, alreadyDone = false, ti
       </div>
       <div style="display: grid; grid-template-columns: 130px 1fr; gap: 6px; color: #334155;">
         <span style="color: #64748b;">Collaborateur :</span>
-        <strong>${absence.prenom || ''} ${absence.nom || ''} (${absence.matricule})</strong>
+        <strong>${esc(absence.prenom)} ${esc(absence.nom)} (${esc(absence.matricule)})</strong>
         <span style="color: #64748b;">Département :</span>
-        <span>${absence.departement || 'GICA'}</span>
+        <span>${esc(absence.departement) || 'GICA'}</span>
         <span style="color: #64748b;">Type de congé :</span>
-        <span style="font-weight: 600; color: #2563eb;">${absence.type_conge || ''}</span>
+        <span style="font-weight: 600; color: #2563eb;">${esc(absence.type_conge)}</span>
         <span style="color: #64748b;">Période :</span>
-        <span>Du ${absence.date_debut || ''} au ${absence.date_fin || ''} (${absence.duree_jours || ''} jour(s))</span>
-        ${absence.motif ? `<span style="color: #64748b;">Motif :</span><span>${absence.motif}</span>` : ''}
+        <span>Du ${esc(absence.date_debut)} au ${esc(absence.date_fin)} (${esc(absence.duree_jours)} jour(s))</span>
+        ${absence.motif ? `<span style="color: #64748b;">Motif :</span><span>${esc(absence.motif)}</span>` : ''}
       </div>
     </div>
   ` : '';
@@ -1955,9 +2199,39 @@ function renderDecisionPage({ success, isApprove = true, alreadyDone = false, ti
   `;
 }
 
-// Route publique de validation/refus rapide en 1 clic par email
+// --- Décision 1-clic par email ---
+// Le GET n'applique JAMAIS la décision : les messageries d'entreprise préchargent les liens
+// (Safe Links, antivirus), ce qui approuverait des congés sans intervention humaine. Le GET
+// affiche une page de confirmation ; seule la soumission du formulaire (POST) agit.
+const esc = (v) => String(v ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+
+function renderQuickDecisionConfirmation({ token, decoded, absence }) {
+  const isApprove = decoded.action === 'approve';
+  const label = isApprove ? 'ACCEPTER LA DEMANDE' : 'REFUSER LA DEMANDE';
+  const color = isApprove ? '#16a34a' : '#dc2626';
+  const actionLabel = isApprove ? "l'approbation" : 'le refus';
+  return renderDecisionPage({
+    success: true,
+    isApprove,
+    title: 'Confirmer votre décision',
+    message: `
+      <p style="margin-bottom: 14px;">Vous êtes sur le point d'enregistrer ${actionLabel} de cette demande de congé.</p>
+      <form method="POST" action="/api/absences/quick-decision" style="margin-top: 8px;">
+        <input type="hidden" name="token" value="${esc(token)}">
+        <button type="submit" style="background-color: ${color}; color: #fff; border: none; cursor: pointer; padding: 13px 26px; border-radius: 8px; font-weight: 700; font-size: 0.95rem; font-family: inherit;">
+          ${label}
+        </button>
+      </form>
+      <p style="margin-top: 16px; font-size: 0.8rem; color: #64748b;">Aucune décision n'est enregistrée tant que vous n'avez pas cliqué sur ce bouton.</p>
+    `,
+    absence
+  });
+}
+
 app.get('/api/absences/quick-decision', (req, res) => {
-  const { token } = req.query;
+  const token = req.query.token;
   if (!token) {
     return res.status(400).send(renderDecisionPage({
       success: false,
@@ -1967,11 +2241,99 @@ app.get('/api/absences/quick-decision', (req, res) => {
   }
 
   jwt.verify(token, JWT_SECRET, (jwtErr, decoded) => {
-    if (jwtErr || !decoded || !decoded.absenceId || !decoded.action) {
+    if (jwtErr || !decoded || !decoded.absenceId || !decoded.action || !decoded.jti) {
       return res.status(401).send(renderDecisionPage({
         success: false,
         title: "Lien Expiré ou Invalide",
-        message: "Ce lien de validation en 1 clic est invalide ou a expiré (validité 14 jours). Vous pouvez vous connecter directement sur le portail RH pour traiter la demande."
+        message: "Ce lien de validation est invalide ou a expiré (validité 72 h). Vous pouvez vous connecter directement sur le portail RH pour traiter la demande."
+      }));
+    }
+
+    db.get("SELECT used_at FROM quick_decision_tokens WHERE jti = ?", [decoded.jti], (errTok, tokenRow) => {
+      if (errTok) {
+        return res.status(500).send(renderDecisionPage({
+          success: false,
+          title: "Erreur Système",
+          message: "Impossible de vérifier ce lien. Veuillez réessayer ou traiter la demande depuis le portail RH."
+        }));
+      }
+      // Le jeton n'est enregistré qu'au moment où la décision est prise : sa présence signifie
+      // qu'il a déjà servi.
+      if (tokenRow) {
+        return res.send(renderDecisionPage({
+          success: true,
+          alreadyDone: true,
+          title: "Décision Déjà Enregistrée",
+          message: "Ce lien a déjà été utilisé. Une décision ne peut être enregistrée qu'une seule fois."
+        }));
+      }
+
+      db.get(
+        `SELECT a.*, e.nom, e.prenom, e.departement, e.poste
+         FROM absences a LEFT JOIN employees e ON a.matricule = e.matricule
+         WHERE a.id = ?`,
+        [decoded.absenceId],
+        (errAbs, absence) => {
+          if (errAbs || !absence) {
+            return res.status(404).send(renderDecisionPage({
+              success: false,
+              title: "Demande Introuvable",
+              message: "La demande de congé correspondante est introuvable ou a été supprimée."
+            }));
+          }
+          return res.send(renderQuickDecisionConfirmation({ token, decoded, absence }));
+        }
+      );
+    });
+  });
+});
+
+// Application de la décision — uniquement depuis le formulaire de confirmation ci-dessus
+app.post('/api/absences/quick-decision', (req, res) => {
+  const token = (req.body && req.body.token) || req.query.token;
+  if (!token) {
+    return res.status(400).send(renderDecisionPage({
+      success: false,
+      title: "Lien Invalide",
+      message: "Jeton de validation manquant. Veuillez utiliser le lien figurant dans votre email officiel."
+    }));
+  }
+
+  jwt.verify(token, JWT_SECRET, async (jwtErr, decoded) => {
+    if (jwtErr || !decoded || !decoded.absenceId || !decoded.action || !decoded.jti) {
+      return res.status(401).send(renderDecisionPage({
+        success: false,
+        title: "Lien Expiré ou Invalide",
+        message: "Ce lien de validation est invalide ou a expiré (validité 72 h). Vous pouvez vous connecter directement sur le portail RH pour traiter la demande."
+      }));
+    }
+
+    // Consommation atomique : l'insertion du `jti` échoue si la décision a déjà été enregistrée.
+    let consumed = null;
+    try {
+      consumed = await db.run(
+        `INSERT INTO quick_decision_tokens (jti, absence_id, action, expires_at, used_at, used_by_ip)
+         VALUES (?, ?, ?, FROM_UNIXTIME(?), NOW(), ?)`,
+        [decoded.jti, decoded.absenceId, decoded.action, decoded.exp, req.ip || null]
+      );
+    } catch (errConsume) {
+      consumed = errConsume;
+    }
+
+    if (consumed instanceof Error) {
+      if (consumed.code === 'ER_DUP_ENTRY') {
+        return res.send(renderDecisionPage({
+          success: true,
+          alreadyDone: true,
+          title: "Décision Déjà Enregistrée",
+          message: "Ce lien a déjà été utilisé. Une décision ne peut être enregistrée qu'une seule fois."
+        }));
+      }
+      console.error("[QuickDecision] Erreur d'enregistrement du jeton :", consumed.message);
+      return res.status(500).send(renderDecisionPage({
+        success: false,
+        title: "Erreur Système",
+        message: "Impossible d'enregistrer la décision. Veuillez réessayer ou traiter la demande depuis le portail RH."
       }));
     }
 
@@ -1994,7 +2356,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
         }));
       }
 
-      const empNomComplet = `${absence.prenom} ${absence.nom}`;
+      const empNomComplet = esc(`${absence.prenom} ${absence.nom}`);
       const empEmail = absence.Email || `${absence.prenom.toLowerCase()}.${absence.nom.toLowerCase()}@gica.dz`;
 
       // Cas 1 : Décision SUPERVISEUR / MANAGER
@@ -2027,12 +2389,19 @@ app.get('/api/absences/quick-decision', (req, res) => {
               }
 
               broadcast({ type: 'update', path: '/api/absences' });
+              logAudit(
+                { user: { matricule: deciderMatricule } },
+                `Décision email 1-clic (responsable) : ${decisionStatut}`,
+                absence.matricule,
+                `IP : ${req.ip || 'inconnue'}`
+              );
 
               if (isApprove) {
                 // Créer les tokens DRH pour validation 1-clic par la DRH
                 const backendBase = process.env.SERVER_URL || `http://${req.hostname || 'localhost'}:${PORT}`;
-                const drhApproveToken = jwt.sign({ absenceId, action: 'approve', deciderMatricule: '1002', role: 'hr' }, JWT_SECRET, { expiresIn: '14d' });
-                const drhRejectToken = jwt.sign({ absenceId, action: 'reject', deciderMatricule: '1002', role: 'hr' }, JWT_SECRET, { expiresIn: '14d' });
+                const drhMatricule = await getDrhMatricule();
+                const drhApproveToken = await createQuickDecisionToken({ absenceId, action: 'approve', deciderMatricule: drhMatricule, role: 'hr' });
+                const drhRejectToken = await createQuickDecisionToken({ absenceId, action: 'reject', deciderMatricule: drhMatricule, role: 'hr' });
                 const drhApproveUrl = `${backendBase}/api/absences/quick-decision?token=${drhApproveToken}`;
                 const drhRejectUrl = `${backendBase}/api/absences/quick-decision?token=${drhRejectToken}`;
 
@@ -2115,7 +2484,7 @@ app.get('/api/absences/quick-decision', (req, res) => {
           }));
         }
 
-        db.get("SELECT matricule, nom, prenom FROM employees WHERE matricule = ?", [deciderMatricule || '1002'], (errDrh, drhUser) => {
+        db.get("SELECT matricule, nom, prenom FROM employees WHERE matricule = ?", [deciderMatricule || ''], (errDrh, drhUser) => {
           const drhNom = drhUser ? `${drhUser.prenom} ${drhUser.nom}` : 'Direction RH';
           const signature = `${drhNom} (DRH - Validation Email 1-Clic)`;
 
@@ -2137,6 +2506,12 @@ app.get('/api/absences/quick-decision', (req, res) => {
               }
 
               broadcast({ type: 'update', path: '/api/absences' });
+              logAudit(
+                { user: { matricule: deciderMatricule } },
+                `Décision email 1-clic (DRH) : ${decisionStatut}`,
+                absence.matricule,
+                `IP : ${req.ip || 'inconnue'}`
+              );
 
               if (isApprove) {
                 const approvalEmailHtml = generateApprovalEmailHtml({
@@ -2422,7 +2797,10 @@ app.post('/api/settings/accrual/run', authenticate, requireRole('hr'), async (re
 // Test d'envoi d'email SMTP
 app.post('/api/settings/smtp/test', authenticate, requireRole('hr', 'supervisor'), async (req, res) => {
   const { destinataire } = req.body;
-  const targetEmail = destinataire || process.env.SMTP_USER || 'it@dz-com.com';
+  const targetEmail = destinataire || process.env.SMTP_USER;
+  if (!targetEmail) {
+    return res.status(400).json({ error: "Aucune adresse de test : renseignez un destinataire ou SMTP_USER." });
+  }
 
   const ok = await sendSmtpEmail({
     to: targetEmail,
@@ -2880,7 +3258,7 @@ const handleGetAttestations = (req, res) => {
     query += " WHERE d.matricule = ?";
     params.push(matricule);
   }
-  query += " ORDER BY d.genere_a DESC LIMIT 50";
+  query += " ORDER BY d.genere_a DESC LIMIT 200";
 
   db.all(query, params, (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });

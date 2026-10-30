@@ -65,7 +65,20 @@ cp .env.example .env
 ```
 Renseignez les accès MySQL et les identifiants SMTP.
 
-### 4. Démarrer le serveur API et le frontend
+> **SMTP obligatoire :** aucun identifiant de messagerie n'est codé dans le code. Si
+> `SMTP_HOST`, `SMTP_USER` ou `SMTP_PASS` manquent, le serveur démarre mais l'envoi d'emails
+> est désactivé (avertissement au démarrage). Pour un serveur interne à certificat
+> auto-signé, ajoutez `SMTP_TLS_INSECURE=true`.
+>
+> **Installation réelle :** laissez `SEED_DEMO=false` pour ne pas créer les comptes de
+> démonstration (`1001/1001`, `1002/1002`, …) sur une base vide.
+
+### 4. Démarrer l'application
+
+**Le plus simple : double-cliquez sur `lancer.bat`.** La console de lancement s'ouvre,
+démarre le serveur API et le frontend, et affiche leur état en temps réel.
+
+En ligne de commande, l'équivalent reste possible :
 ```bash
 # Lancer le serveur backend (Port 8081)
 node server.js
@@ -73,6 +86,53 @@ node server.js
 # Dans un autre terminal, lancer l'application frontend (Port 8082)
 npm run dev
 ```
+
+---
+
+## 🖥️ Console de lancement (application de bureau)
+
+Une interface graphique remplace l'ancien `run_all.bat` (deux fenêtres noires).
+
+| Commande | Effet |
+|---|---|
+| `lancer.bat` | Ouvre la console : exécutable s'il est construit, sinon Electron, sinon navigateur |
+| `npm run exe` | Construit l'exécutable autonome `release/Console-GICA-RH-<version>.exe` |
+| `npm run app` | Ouvre la console en mode développement (Electron) |
+| `npm run console` | Console dans le navigateur sur http://localhost:8090 |
+
+**Fonctions de la console**
+- Démarrage / arrêt / redémarrage du serveur API (8081) et du frontend (8082), individuellement ou globalement.
+- État live : pastille d'état, PID, port, disponibilité réelle (attente du message de démarrage ou de la réponse HTTP) et uptime.
+- Journaux en temps réel par service (SSE), coloration des erreurs et avertissements, copie du journal.
+- Détection des instances déjà lancées hors console, avec possibilité de les arrêter pour libérer le port.
+- Contrôles préalables : Node/npm, `node_modules`, `.env` et variables manquantes, SMTP, `SEED_DEMO`, disponibilité des ports.
+- Test de connexion MySQL (version du serveur, nombre d'employés et de pointages).
+- Opérations : `npm install`, build de production (`dist/`), ouverture de l'application dans le navigateur.
+
+**Utilisation de l'exécutable**
+1. `npm run exe` génère `release/Console-GICA-RH-<version>.exe` (aucune installation requise).
+   Une copie prête à l'emploi se trouve à la racine du projet : `Console-GICA-RH.exe`.
+   L'interface est en thème clair, comme le portail.
+2. Placez l'exécutable **dans le dossier du projet** (à côté de `server.js`) : il le détecte automatiquement.
+   S'il est ailleurs, il demande le dossier au premier lancement et le mémorise.
+3. À la fermeture de la fenêtre, les services démarrés par la console sont arrêtés.
+
+> Variables utiles : `GICA_PROJECT_DIR` (forcer le dossier du projet),
+> `GICA_NO_AUTOSTART=1` (ouvrir sans démarrer les services), `LAUNCHER_PORT` (port de la console).
+>
+> Le projet doit rester installé (Node.js + `node_modules` + `.env`) : l'exécutable est un
+> tableau de bord, il pilote votre projet et n'embarque pas la base de données.
+
+---
+
+## 🔐 Règles de sécurité appliquées
+
+- **Création / modification / désactivation d'un compte, attribution des rôles et soldes :** réservées à la DRH.
+- **Circuit de congé à 2 niveaux :** l'avis du responsable est consultatif ; seule la DRH peut clôturer une demande et débiter le solde. Un responsable ne peut statuer que sur son équipe directe, son département ou l'équipe dont il assure l'intérim.
+- **Justificatifs médicaux :** accessibles uniquement au collaborateur, à la DRH, à son responsable direct et à l'intérimaire actif de ce responsable.
+- **Pointages :** un collaborateur ne peut pas modifier les heures d'un collègue (il pointe via la borne). Un responsable est limité à son département.
+- **Liens de validation par email :** le lien ouvre une page de confirmation (le simple chargement du lien n'enregistre rien), le jeton est à usage unique et valable 72 h. Les liens émis avant cette version ne sont plus valides.
+- **Mots de passe :** minimum 8 caractères, jamais égaux au matricule ; un compte créé ou réinitialisé par la DRH doit changer son mot de passe à la première connexion.
 
 ---
 
